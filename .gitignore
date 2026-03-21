@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+.venv/
+uv.lock
+.mcp.json
+.claude/
+screenshots/*
+manual/

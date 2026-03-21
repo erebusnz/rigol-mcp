@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rigol-mcp"
+version = "0.1.0"
+description = "MCP server for Rigol DS1000Z oscilloscope over LAN"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp[cli]>=1.0.0",
+    "pyvisa>=1.14.0",
+    "pyvisa-py>=0.7.0",
+]
+
+[project.scripts]
+rigol-mcp = "rigol_mcp.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rigol_mcp"]
