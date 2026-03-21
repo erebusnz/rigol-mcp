@@ -59,7 +59,8 @@ async def list_tools() -> list[types.Tool]:
             name="screenshot",
             description=(
                 "Capture a screenshot of the oscilloscope display. "
-                "Returns the image and the absolute path where the PNG was saved."
+                "Returns the image and the absolute path where the PNG was saved. "
+                "Do not call concurrently with any other rigol tool."
             ),
             inputSchema={"type": "object", "properties": {}, "required": []},
         ),
@@ -67,7 +68,8 @@ async def list_tools() -> list[types.Tool]:
             name="idn",
             description=(
                 "Identify the instrument. Returns make, model, serial, and firmware version. "
-                "Use to verify connectivity before starting a measurement session."
+                "Use to verify connectivity before starting a measurement session. "
+                "Do not call concurrently with any other rigol tool."
             ),
             inputSchema={"type": "object", "properties": {}, "required": []},
         ),
@@ -76,7 +78,8 @@ async def list_tools() -> list[types.Tool]:
             description=(
                 "Return a snapshot of the scope's current configuration: "
                 "active channels (scale, offset, coupling, probe), timebase, and trigger. "
-                "Call this at the start of a session to understand the current setup."
+                "Call this at the start of a session to understand the current setup. "
+                "Do not call concurrently with any other rigol tool."
             ),
             inputSchema={"type": "object", "properties": {}, "required": []},
         ),
@@ -88,7 +91,8 @@ async def list_tools() -> list[types.Tool]:
                 "scale_v_div: V/div. offset_v: volts. coupling: AC, DC, or GND. "
                 "probe: attenuation ratio (1, 10, 100, …). "
                 "Parameter names match get_scope_state output for easy round-tripping. "
-                "Returns the resulting channel configuration."
+                "Returns the resulting channel configuration. "
+                "Do not call concurrently with any other rigol tool."
             ),
             inputSchema={
                 "type": "object",
@@ -113,7 +117,8 @@ async def list_tools() -> list[types.Tool]:
                 "To align the right edge to a zero crossing at time T: set offset_s = T − 6×scale_s_div. "
                 "To put the trigger at the left edge of the screen: set offset_s = +6×scale_s_div. "
                 "Parameter names match get_scope_state output for easy round-tripping. "
-                "Returns the resulting timebase configuration."
+                "Returns the resulting timebase configuration. "
+                "Do not call concurrently with any other rigol tool."
             ),
             inputSchema={
                 "type": "object",
@@ -131,7 +136,8 @@ async def list_tools() -> list[types.Tool]:
                 "source: CHAN1–CHAN4 or EXT. "
                 "slope: POS (rising), NEG (falling), or RFAL (either). "
                 "level: trigger level in volts. "
-                "Returns the resulting trigger configuration."
+                "Returns the resulting trigger configuration. "
+                "Do not call concurrently with any other rigol tool."
             ),
             inputSchema={
                 "type": "object",
@@ -157,7 +163,8 @@ async def list_tools() -> list[types.Tool]:
                 "A return value of 9.9E37 is the scope's invalid/overflow sentinel — "
                 "it means the measurement could not be computed (e.g. FREQUENCY returns 9.9E37 "
                 "when the timebase is too narrow to show a complete cycle; widen scale and retry). "
-                "For delay or phase between two channels use measure_between."
+                "For delay or phase between two channels use measure_between. "
+                "Do not call concurrently with any other rigol tool."
             ),
             inputSchema={
                 "type": "object",
@@ -175,7 +182,8 @@ async def list_tools() -> list[types.Tool]:
                 "source1 is the reference channel, source2 is the measured channel. "
                 "item: RDELAY (rising-edge delay, seconds), FDELAY (falling-edge delay, seconds), "
                 "RPHASE (rising-edge phase, degrees), FPHASE (falling-edge phase, degrees). "
-                "Stop acquisition first for stable readings."
+                "Stop acquisition first for stable readings. "
+                "Do not call concurrently with any other rigol tool."
             ),
             inputSchema={
                 "type": "object",
@@ -196,7 +204,8 @@ async def list_tools() -> list[types.Tool]:
                 "DC offset, cycle count, and data-quality warnings (e.g. mid-cycle edges, invalid frequency). "
                 "Set raw_data=true to get the full time/voltage JSON arrays instead. "
                 "After reading, act on any warnings — if FREQUENCY would be 9.9E37 widen the timebase; "
-                "if edges are not near the DC mean, adjust offset so right edge = N×(period/2) − 6×scale."
+                "if edges are not near the DC mean, adjust offset so right edge = N×(period/2) − 6×scale. "
+                "Do not call concurrently with any other rigol tool."
             ),
             inputSchema={
                 "type": "object",
@@ -213,7 +222,8 @@ async def list_tools() -> list[types.Tool]:
                 "Set cursor mode and/or X positions. "
                 "mode: OFF, MANUAL, TRACK (omit to keep current mode). "
                 "ax/bx: cursor A/B time positions in seconds. "
-                "Returns the resulting cursor readouts."
+                "Returns the resulting cursor readouts. "
+                "Do not call concurrently with any other rigol tool."
             ),
             inputSchema={
                 "type": "object",
@@ -229,7 +239,8 @@ async def list_tools() -> list[types.Tool]:
             name="get_cursor_values",
             description=(
                 "Read current cursor mode and all cursor readouts. "
-                "AX_s and BX_s are time positions in seconds."
+                "AX_s and BX_s are time positions in seconds. "
+                "Do not call concurrently with any other rigol tool."
             ),
             inputSchema={"type": "object", "properties": {}, "required": []},
         ),
@@ -239,7 +250,8 @@ async def list_tools() -> list[types.Tool]:
                 "Send an arbitrary SCPI command. "
                 "Queries (ending with '?') return the response string; "
                 "writes return empty string and auto-check the error queue. "
-                "Use as an escape hatch when no dedicated tool covers the operation."
+                "Use as an escape hatch when no dedicated tool covers the operation. "
+                "Do not call concurrently with any other rigol tool."
             ),
             inputSchema={
                 "type": "object",
@@ -251,12 +263,12 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="check_error",
-            description="Query the SCPI error queue. Returns the error if present, or 'No error' if clear.",
+            description="Query the SCPI error queue. Returns the error if present, or 'No error' if clear. Do not call concurrently with any other rigol tool.",
             inputSchema={"type": "object", "properties": {}, "required": []},
         ),
         types.Tool(
             name="run",
-            description="Start continuous acquisition. Returns trigger status after the command.",
+            description="Start continuous acquisition. Returns trigger status after the command. Do not call concurrently with any other rigol tool.",
             inputSchema={"type": "object", "properties": {}, "required": []},
         ),
         types.Tool(
@@ -264,7 +276,8 @@ async def list_tools() -> list[types.Tool]:
             description=(
                 "Stop acquisition and freeze the display. "
                 "Use before reading measurements or cursors for stable values. "
-                "Returns trigger status after the command."
+                "Returns trigger status after the command. "
+                "Do not call concurrently with any other rigol tool."
             ),
             inputSchema={"type": "object", "properties": {}, "required": []},
         ),
@@ -274,7 +287,8 @@ async def list_tools() -> list[types.Tool]:
                 "Arm the scope for a single acquisition; stops automatically after one trigger event. "
                 "Returns trigger status. "
                 "Note: acquisition does not complete until a trigger occurs — "
-                "call stop or check trigger status before reading measurements."
+                "call stop or check trigger status before reading measurements. "
+                "Do not call concurrently with any other rigol tool."
             ),
             inputSchema={"type": "object", "properties": {}, "required": []},
         ),
@@ -282,7 +296,8 @@ async def list_tools() -> list[types.Tool]:
             name="autoscale",
             description=(
                 "Run the scope's auto-setup (timebase, vertical scale, trigger). "
-                "Takes a few seconds; call get_scope_state afterwards to see the resulting configuration."
+                "Takes a few seconds; call get_scope_state afterwards to see the resulting configuration. "
+                "Do not call concurrently with any other rigol tool."
             ),
             inputSchema={"type": "object", "properties": {}, "required": []},
         ),

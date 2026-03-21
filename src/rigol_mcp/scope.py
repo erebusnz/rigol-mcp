@@ -40,6 +40,10 @@ def invalidate_scope() -> None:
     global _scope
     if _scope is not None:
         try:
+            _scope.clear()
+        except Exception:
+            pass
+        try:
             _scope.close()
         except Exception:
             pass
