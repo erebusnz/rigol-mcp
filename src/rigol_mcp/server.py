@@ -37,7 +37,7 @@ async def _call(fn, *args, **kwargs):
     async with _scope_lock:
         try:
             return fn(get_scope(), *args, **kwargs)
-        except (pyvisa.errors.VisaIOError, UnicodeDecodeError):
+        except (pyvisa.errors.VisaIOError, UnicodeDecodeError, OSError):
             invalidate_scope()
             return fn(get_scope(), *args, **kwargs)
 
