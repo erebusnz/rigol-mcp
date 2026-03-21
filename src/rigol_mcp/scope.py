@@ -31,6 +31,7 @@ def get_scope() -> pyvisa.resources.Resource:
         _scope.chunk_size = 1024 * 1024
         _scope.write_termination = "\n"
         _scope.read_termination = "\n"
+        _scope.clear()  # flush any stale data left in the TCP receive buffer
     return _scope
 
 
