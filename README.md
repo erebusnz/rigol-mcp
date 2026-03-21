@@ -40,10 +40,14 @@ uv sync
 
 On the scope, go to **Utility → IO Setting → LAN** and note the IP address (or assign a static one). The scope listens on **port 5555** for raw SCPI commands — no additional configuration is needed.
 
-Verify connectivity before using:
+*Replace 192.168.1.123 with the IP address of your scope in all instructions below.*
+
+Verify in Browser: http://192.168.1.123/DS1000Z_WelcomePage.html 
+
+Verify connectivity before using as MCP:
 
 ```bash
-python -c "import pyvisa; rm = pyvisa.ResourceManager(); s = rm.open_resource('TCPIP0::192.168.1.47::5555::SOCKET'); s.write_termination='\n'; s.read_termination='\n'; print(s.query('*IDN?'))"
+python -c "import pyvisa; rm = pyvisa.ResourceManager(); s = rm.open_resource('TCPIP0::192.168.1.123::5555::SOCKET'); s.write_termination='\n'; s.read_termination='\n'; print(s.query('*IDN?'))"
 ```
 
 You should see something like:
@@ -53,16 +57,16 @@ RIGOL TECHNOLOGIES,DS1054Z,DS1ZA123456789,00.04.04.SP4
 
 ## Configuration
 
-Set the scope IP via environment variable:
+Set the scope IP for MCP via environment variable:
 
 ```bash
-export RIGOL_IP=192.168.1.47
+export RIGOL_IP=192.168.1.123
 ```
 
 Or create a `.env` file (copy from `.env.example`):
 
 ```
-RIGOL_IP=192.168.1.47
+RIGOL_IP=192.168.1.123
 ```
 
 **Optional:**
@@ -84,7 +88,7 @@ Add to your `.mcp.json` (or Claude Desktop MCP config):
       "args": ["run", "rigol-mcp"],
       "cwd": "/path/to/rigol-mcp",
       "env": {
-        "RIGOL_IP": "192.168.1.47"
+        "RIGOL_IP": "192.168.1.123"
       }
     }
   }
@@ -154,6 +158,9 @@ Add to your `.mcp.json` (or Claude Desktop MCP config):
 **Cursor measurement:**
 > "Put manual cursors on the first rising edge of the signal on channel 1 — cursor A at the 10% level and cursor B at the 90% level — and read the rise time from the delta."
 
+**Transient / ringing characterisation:**
+> "There's a damped oscillation on channel 1 after a step edge. Stop the scope, measure Vpp, Vmax, Vmin, and Vrms, then estimate the ring frequency and how many cycles it takes to decay."
+
 **Iterative debugging:**
 > "I'm verifying the gain of an amplifier. Channel 1 is the input, channel 2 is the output. The expected gain is 20 dB. Figure out whether it's within spec."
 
@@ -169,7 +176,7 @@ rigol_mcp.server      ← tool definitions, request routing
         │  Python function calls
 rigol_mcp.scope       ← VISA connection, SCPI command helpers
         │  SCPI over TCP/IP (port 5555)
-Rigol DS1000Z         ← 192.168.1.47
+Rigol DS1000Z         ← 192.168.1.123
 ```
 
 The VISA connection is cached across tool calls (one TCP connection per server session) and reconnects automatically on network errors.
