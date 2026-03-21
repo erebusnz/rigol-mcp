@@ -8,6 +8,7 @@ from pathlib import Path
 
 
 import asyncio
+import time
 
 import mcp.types as types
 import pyvisa
@@ -29,17 +30,26 @@ server = Server("rigol-mcp")
 
 # Serialises all VISA operations — the underlying TCP socket is not thread/async safe.
 _scope_lock = asyncio.Lock()
+_last_call_time: float = 0.0
+_MIN_INTERVAL = 0.1  # 100 ms minimum between SCPI operations
 
 
 async def _call(fn, *args, **kwargs):
     """Call fn(scope, *args, **kwargs) with the cached connection.
-    Serialises concurrent calls via a lock, and reconnects on communication errors."""
+    Serialises concurrent calls via a lock, enforces 100 ms minimum inter-command
+    gap, and reconnects on communication errors."""
+    global _last_call_time
     async with _scope_lock:
+        elapsed = time.monotonic() - _last_call_time
+        if elapsed < _MIN_INTERVAL:
+            await asyncio.sleep(_MIN_INTERVAL - elapsed)
         try:
             return fn(get_scope(), *args, **kwargs)
         except (pyvisa.errors.VisaIOError, UnicodeDecodeError, OSError):
             invalidate_scope()
             return fn(get_scope(), *args, **kwargs)
+        finally:
+            _last_call_time = time.monotonic()
 
 
 @server.list_tools()

@@ -177,7 +177,7 @@ def single(scope: pyvisa.resources.Resource) -> str:
 
 def autoscale(scope: pyvisa.resources.Resource) -> None:
     """Run the scope's auto-setup (timebase, vertical scale, trigger)."""
-    scope.write(":AUToscale")
+    scope.query(":AUToscale;*OPC?")  # chain OPC? so we block until autoscale completes
     if err := check_scpi_error(scope):
         raise RuntimeError(f"SCPI error after :AUToscale: {err}")
 
