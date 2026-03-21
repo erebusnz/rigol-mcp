@@ -214,6 +214,7 @@ def measure(scope: pyvisa.resources.Resource, channel: str, item: str) -> str:
         raise ValueError(f"'{item}' requires two sources — use measure_between()")
     if it not in MEASURE_ITEMS:
         raise ValueError(f"Unknown item '{item}'. Valid: {sorted(MEASURE_ITEMS)}")
+    scope.write(f":MEASure:ITEM {it},{ch}")
     return scope.query(f":MEASure:ITEM? {it},{ch}").strip()
 
 
@@ -237,6 +238,7 @@ def measure_between(
         )
     s1 = source1.upper()
     s2 = source2.upper()
+    scope.write(f":MEASure:ITEM {it},{s1},{s2}")
     return scope.query(f":MEASure:ITEM? {it},{s1},{s2}").strip()
 
 
