@@ -4,6 +4,12 @@ MCP server for controlling a **Rigol DS1000Z series oscilloscope** over LAN. Exp
 
 ![Scope](media/example.png)
 
+### Example: unknown signal characterisation in Claude
+
+Unknown signal (square wave into LCR trap), wrong channel enabled, invalid timebase/voltage/trigger. Claude identifies the signal type, corrects the setup, and characterises the waveform.
+
+![Scope](media/example-claude.png)
+
 ## Supported Hardware
 
 **Rigol DS1000Z / MSO1000Z series:**
@@ -42,7 +48,7 @@ On the scope, go to **Utility → IO Setting → LAN** and note the IP address (
 
 *Replace 192.168.1.123 with the IP address of your scope in all instructions below.*
 
-Verify in Browser: http://192.168.1.123/DS1000Z_WelcomePage.html 
+Verify in browser: `http://192.168.1.123/DS1000Z_WelcomePage.html`
 
 Verify connectivity before using as MCP:
 
@@ -125,7 +131,7 @@ Add to your `.mcp.json` (or Claude Desktop MCP config):
 
 | Tool | Description |
 |---|---|
-| `measure` | Query any single-channel measurement: VMAX, VMIN, VPP, VRMS, FREQUENCY, PERIOD, PWIDTH, NWIDTH, PDUTY, NDUTY, RTIME, FTIME, OVERSHOOT, PRESHOOT, and more |
+| `measure` | Query any single-channel measurement: VMAX, VMIN, VPP, VTOP, VBASE, VAMP, VAVG, VRMS, PVRMS, VUPPER, VMID, VLOWER, VARIANCE, FREQUENCY, PERIOD, PWIDTH, NWIDTH, PDUTY, NDUTY, RTIME, FTIME, OVERSHOOT, PRESHOOT, PSLEWRATE, NSLEWRATE, TVMAX, TVMIN, MAREA, MPAREA, PPULSES, NPULSES, PEDGES, NEDGES |
 | `measure_between` | Query delay or phase between two channels: RDELAY, FDELAY (seconds), RPHASE, FPHASE (degrees) |
 | `get_waveform` | Download and analyse waveform data (~1200 points); returns text analysis by default, raw time/voltage arrays with `raw_data=true` |
 
@@ -190,3 +196,7 @@ The server connects using **raw socket VISA** (`TCPIP0::<ip>::5555::SOCKET`), no
 - LAN only (no USB) - USB just adds more problems and OS-specific implementation challenges!
 - No support for math channels, digital channels (MSO), or protocol decode in the current tools yet — use `send_raw` for those
 - Waveform download uses NORMAL mode (screen buffer, ~1200 points); full memory depth (RAW mode, up to 56M points) is not yet implemented
+
+## License
+
+MIT — see [LICENSE](LICENSE).

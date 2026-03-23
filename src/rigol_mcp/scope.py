@@ -393,4 +393,7 @@ def screenshot_png(scope: pyvisa.resources.Resource) -> bytes:
         raise ValueError(f"Expected TMC block header starting with '#', got {prefix!r}")
     n = int(prefix[1:2])
     data_length = int(scope.read_bytes(n))
-    return scope.read_bytes(data_length)
+    raw = scope.read_bytes(data_length + 1)
+    if raw[-1:] != b'\n':
+        raise ValueError(f"Expected \\n after PNG block, got {raw[-1:]!r}")
+    return raw[:-1]

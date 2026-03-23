@@ -31,7 +31,8 @@ server = Server("rigol-mcp")
 # Serialises all VISA operations — the underlying TCP socket is not thread/async safe.
 _scope_lock = asyncio.Lock()
 _last_call_time: float = 0.0
-_MIN_INTERVAL = 0.1  # 100 ms minimum between SCPI operations
+_MIN_INTERVAL = 0.1          # 100 ms minimum between SCPI operations
+_POST_SCREENSHOT_DELAY = 2.0 # scope needs recovery time after large display transfer
 
 
 async def _call(fn, *args, **kwargs):
@@ -155,10 +156,18 @@ async def list_tools() -> list[types.Tool]:
                 "Query a single-source built-in measurement on a channel. "
                 "Stop acquisition first for stable readings. "
                 "channel: CHAN1–CHAN4. "
-                "item: VMAX, VMIN, VPP, VTOP, VBASE, VAMP, VAVG, VRMS, "
+                "item: VMAX, VMIN, VPP, "
+                "VTOP (pulse top flat level, histogram-derived — not the same as VMAX), "
+                "VBASE (pulse base flat level — not the same as VMIN), "
+                "VAMP (=VTOP−VBASE — not the same as VPP=VMAX−VMIN), "
+                "VAVG, VRMS (RMS over screen window), PVRMS (RMS over one period), "
+                "VUPPER/VMID/VLOWER (timing thresholds at 90%/50%/10% of VAMP by default), "
+                "VARIANCE (statistical variance of voltage samples), "
                 "FREQUENCY, PERIOD, PWIDTH, NWIDTH, PDUTY, NDUTY, "
-                "RTIME, FTIME, OVERSHOOT, PRESHOOT, PSLEWRATE, NSLEWRATE, "
-                "TVMAX, TVMIN, VUPPER, VMID, VLOWER, VARIANCE, PVRMS, "
+                "RTIME, FTIME, OVERSHOOT, PRESHOOT, "
+                "PSLEWRATE, NSLEWRATE (slew rate, V/s), "
+                "TVMAX, TVMIN (time position at which VMAX/VMIN occurs), "
+                "MAREA (waveform area, V·s over screen window), MPAREA (area per period, V·s), "
                 "PPULSES, NPULSES, PEDGES, NEDGES. "
                 "A return value of 9.9E37 is the scope's invalid/overflow sentinel — "
                 "it means the measurement could not be computed (e.g. FREQUENCY returns 9.9E37 "
@@ -220,7 +229,9 @@ async def list_tools() -> list[types.Tool]:
             name="set_cursors",
             description=(
                 "Set cursor mode and/or X positions. "
-                "mode: OFF, MANUAL, TRACK (omit to keep current mode). "
+                "mode: OFF, MANUAL (fixed time positions, reads voltage at those X points), "
+                "TRACK (cursors snap to and follow the waveform at the X position). "
+                "Omit mode to keep current mode. "
                 "ax/bx: cursor A/B time positions in seconds. "
                 "Returns the resulting cursor readouts. "
                 "Do not call concurrently with any other rigol tool."
@@ -240,6 +251,7 @@ async def list_tools() -> list[types.Tool]:
             description=(
                 "Read current cursor mode and all cursor readouts. "
                 "AX_s and BX_s are time positions in seconds. "
+                "inv_delta_x is 1/Δt — the frequency between the two cursors. "
                 "Do not call concurrently with any other rigol tool."
             ),
             inputSchema={"type": "object", "properties": {}, "required": []},
@@ -308,6 +320,9 @@ async def list_tools() -> list[types.Tool]:
 async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
     if name == "screenshot":
         png_bytes = await _call(screenshot_png)
+        # Advance the cooldown timestamp so the next _call waits for the scope to recover
+        # after the large display transfer before sending further SCPI commands.
+        _last_call_time = time.monotonic() + _POST_SCREENSHOT_DELAY
 
         save_dir = Path(os.environ.get("RIGOL_SCREENSHOT_DIR", "screenshots")).resolve()
         save_dir.mkdir(parents=True, exist_ok=True)
