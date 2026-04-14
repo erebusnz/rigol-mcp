@@ -12,6 +12,7 @@ _SCREEN_CENTER = _SCREEN_POINTS // 2                  # 300
 # Module-level cached connection
 _rm: pyvisa.ResourceManager | None = None
 _scope: pyvisa.resources.Resource | None = None
+_is_dho: bool | None = None
 
 
 def get_resource_string() -> str:
@@ -32,12 +33,13 @@ def get_scope() -> pyvisa.resources.Resource:
         _scope.write_termination = "\n"
         _scope.read_termination = "\n"
         _scope.clear()  # flush any stale data left in the TCP receive buffer
+        _scope.write("*CLS")  # clear SCPI error queue (survives connection resets)
     return _scope
 
 
 def invalidate_scope() -> None:
     """Close and discard the cached connection so the next call reconnects."""
-    global _scope
+    global _scope, _is_dho
     if _scope is not None:
         try:
             _scope.clear()
@@ -48,15 +50,32 @@ def invalidate_scope() -> None:
         except Exception:
             pass
         _scope = None
+    _is_dho = None
+
+
+def is_dho(scope: pyvisa.resources.Resource) -> bool:
+    """Detect DHO-series scope via *IDN?. Result is cached until invalidate_scope."""
+    global _is_dho
+    if _is_dho is None:
+        _is_dho = "DHO" in scope.query("*IDN?").strip().upper()
+    return _is_dho
 
 
 def check_scpi_error(scope: pyvisa.resources.Resource) -> str | None:
-    """Query the SCPI error queue. Returns error string if an error is present, None if clear."""
-    response = scope.query(":SYSTem:ERRor?").strip()
-    # No error returns '0' or '0,"No error"'
-    if response == "0" or response.startswith("0,"):
-        return None
-    return response
+    """Drain the SCPI error queue. Returns the first error encountered, None if queue was clear.
+
+    Draining (not just reading one) prevents stale errors from a prior failed command
+    leaking into the next tool's result. Capped to avoid pathological loops.
+    """
+    first_err: str | None = None
+    for _ in range(16):
+        response = scope.query(":SYSTem:ERRor?").strip()
+        # No error returns '0' or '0,"No error"'
+        if response == "0" or response.startswith("0,"):
+            return first_err
+        if first_err is None:
+            first_err = response
+    return first_err
 
 
 def screen_x_to_time(scope: pyvisa.resources.Resource, screen_x: int) -> float:
@@ -96,50 +115,50 @@ def set_cursor_positions(
     bx: float | None = None,
 ) -> None:
     """Set cursor A and/or B X positions (in seconds). mode: MANUAL or TRACK.
-    Time values are automatically converted to screen pixel positions."""
+
+    DS1000Z: :AX/:BX take screen pixel positions — convert seconds to pixels.
+    DHO: :CAX/:CBX take seconds directly.
+    """
     prefix = ":CURSor:TRACk" if mode.upper() in ("TRACK", "TRAC") else ":CURSor:MANual"
-    if ax is not None:
-        screen_x = time_to_screen_x(scope, ax)
-        scope.write(f"{prefix}:AX {screen_x}")
+    dho = is_dho(scope)
+    for name, value in (("A", ax), ("B", bx)):
+        if value is None:
+            continue
+        if dho:
+            cmd = f"{prefix}:C{name}X {value}"
+        else:
+            cmd = f"{prefix}:{name}X {time_to_screen_x(scope, value)}"
+        scope.write(cmd)
         if err := check_scpi_error(scope):
-            raise RuntimeError(f"SCPI error after {prefix}:AX: {err}")
-    if bx is not None:
-        screen_x = time_to_screen_x(scope, bx)
-        scope.write(f"{prefix}:BX {screen_x}")
-        if err := check_scpi_error(scope):
-            raise RuntimeError(f"SCPI error after {prefix}:BX: {err}")
+            raise RuntimeError(f"SCPI error after '{cmd}': {err}")
 
 
 def get_cursor_values(scope: pyvisa.resources.Resource) -> dict:
     """Read current cursor mode and all available readouts. AX_s/BX_s are in seconds."""
     mode = scope.query(":CURSor:MODE?").strip()
     result: dict = {"mode": mode}
-    if mode in ("MANUAL", "MAN"):
-        p = ":CURSor:MANual"
-        ax_px = int(float(scope.query(f"{p}:AX?").strip()))
-        bx_px = int(float(scope.query(f"{p}:BX?").strip()))
+    if mode not in ("MANUAL", "MAN", "TRACK", "TRAC"):
+        return result
+    p = ":CURSor:TRACk" if mode in ("TRACK", "TRAC") else ":CURSor:MANual"
+    if is_dho(scope):
+        ax_s = float(scope.query(f"{p}:CAX?").strip())
+        bx_s = float(scope.query(f"{p}:CBX?").strip())
+    else:
+        ax_s = screen_x_to_time(scope, int(float(scope.query(f"{p}:AX?").strip())))
+        bx_s = screen_x_to_time(scope, int(float(scope.query(f"{p}:BX?").strip())))
+    result.update({
+        "AX_s":        ax_s,
+        "BX_s":        bx_s,
+        "AX_value":    scope.query(f"{p}:AXValue?").strip(),
+        "BX_value":    scope.query(f"{p}:BXValue?").strip(),
+        "delta_x":     scope.query(f"{p}:XDELta?").strip(),
+        "inv_delta_x": scope.query(f"{p}:IXDELta?").strip(),
+    })
+    if mode in ("TRACK", "TRAC"):
         result.update({
-            "AX_s":        screen_x_to_time(scope, ax_px),
-            "BX_s":        screen_x_to_time(scope, bx_px),
-            "AX_value":    scope.query(f"{p}:AXValue?").strip(),
-            "BX_value":    scope.query(f"{p}:BXValue?").strip(),
-            "delta_x":     scope.query(f"{p}:XDELta?").strip(),
-            "inv_delta_x": scope.query(f"{p}:IXDELta?").strip(),
-        })
-    elif mode in ("TRACK", "TRAC"):
-        p = ":CURSor:TRACk"
-        ax_px = int(float(scope.query(f"{p}:AX?").strip()))
-        bx_px = int(float(scope.query(f"{p}:BX?").strip()))
-        result.update({
-            "AX_s":        screen_x_to_time(scope, ax_px),
-            "BX_s":        screen_x_to_time(scope, bx_px),
-            "AX_value":    scope.query(f"{p}:AXValue?").strip(),
-            "AY_value":    scope.query(f"{p}:AYValue?").strip(),
-            "BX_value":    scope.query(f"{p}:BXValue?").strip(),
-            "BY_value":    scope.query(f"{p}:BYValue?").strip(),
-            "delta_x":     scope.query(f"{p}:XDELta?").strip(),
-            "delta_y":     scope.query(f"{p}:YDELta?").strip(),
-            "inv_delta_x": scope.query(f"{p}:IXDELta?").strip(),
+            "AY_value": scope.query(f"{p}:AYValue?").strip(),
+            "BY_value": scope.query(f"{p}:BYValue?").strip(),
+            "delta_y":  scope.query(f"{p}:YDELta?").strip(),
         })
     return result
 
@@ -180,10 +199,15 @@ def single(scope: pyvisa.resources.Resource) -> str:
 
 
 def autoscale(scope: pyvisa.resources.Resource) -> None:
-    """Run the scope's auto-setup (timebase, vertical scale, trigger)."""
-    scope.query(":AUToscale;*OPC?")  # chain OPC? so we block until autoscale completes
+    """Run the scope's auto-setup (timebase, vertical scale, trigger).
+
+    DHO rejects bare `:AUToscale` with -109 "Missing parameter" — its action
+    command is `:AUToset`. DS1000Z uses `:AUToscale`.
+    """
+    scope.write(":AUToset" if is_dho(scope) else ":AUToscale")
+    scope.query("*OPC?")  # block until autoscale completes
     if err := check_scpi_error(scope):
-        raise RuntimeError(f"SCPI error after :AUToscale: {err}")
+        raise RuntimeError(f"SCPI error after autoscale: {err}")
 
 
 def idn(scope: pyvisa.resources.Resource) -> str:
@@ -209,6 +233,22 @@ MEASURE_ITEMS_TWO_SOURCE = frozenset({
     "RDELAY", "FDELAY", "RPHASE", "FPHASE",
 })
 
+# DHO has no plain RDELay/FDELay/RPHase/FPHase. It exposes a 4-way matrix
+# combining rising/falling edges on each source. DS1000Z names (rise-to-rise
+# and fall-to-fall) map to the homogeneous pairs; rise-to-fall and
+# fall-to-rise are DHO-only and accepted verbatim.
+MEASURE_ITEMS_TWO_SOURCE_DHO = frozenset({
+    "RRDELAY", "RFDELAY", "FRDELAY", "FFDELAY",
+    "RRPHASE", "RFPHASE", "FRPHASE", "FFPHASE",
+})
+
+_DS1000Z_TO_DHO_TWO_SOURCE = {
+    "RDELAY": "RRDELAY",
+    "FDELAY": "FFDELAY",
+    "RPHASE": "RRPHASE",
+    "FPHASE": "FFPHASE",
+}
+
 
 def measure(scope: pyvisa.resources.Resource, channel: str, item: str) -> str:
     """Query a single-source built-in measurement. Returns the raw value string."""
@@ -218,7 +258,14 @@ def measure(scope: pyvisa.resources.Resource, channel: str, item: str) -> str:
         raise ValueError(f"'{item}' requires two sources — use measure_between()")
     if it not in MEASURE_ITEMS:
         raise ValueError(f"Unknown item '{item}'. Valid: {sorted(MEASURE_ITEMS)}")
-    scope.write(f":MEASure:ITEM {it},{ch}")
+    # On DHO, `:MEAS:ITEM <item>,<ch>` invalidates the item until the next trigger —
+    # stopped scopes then return 9.9E37 forever. `:MEAS:STATistic:ITEM` registers
+    # the item persistently in the measurement engine without clearing its value,
+    # so the subsequent `:MEAS:ITEM?` returns the most recent acquisition's result.
+    if is_dho(scope):
+        scope.write(f":MEASure:STATistic:ITEM {it},{ch}")
+    else:
+        scope.write(f":MEASure:ITEM {it},{ch}")
     return scope.query(f":MEASure:ITEM? {it},{ch}").strip()
 
 
@@ -230,19 +277,33 @@ def measure_between(
 ) -> str:
     """Query a two-source measurement (delay or phase) between two channels.
 
-    item: RDELAY (rising-edge delay), FDELAY (falling-edge delay),
-          RPHASE (rising-edge phase), FPHASE (falling-edge phase).
+    DS1000Z items: RDELAY, FDELAY, RPHASE, FPHASE (rising/falling homogeneous).
+    DHO items: RRDELAY/RFDELAY/FRDELAY/FFDELAY + RRPHASE/RFPHASE/FRPHASE/FFPHASE.
+    On DHO the DS1000Z names are auto-mapped to their homogeneous-pair equivalents
+    (RDELAY→RRDELAY, FDELAY→FFDELAY, RPHASE→RRPHASE, FPHASE→FFPHASE).
+
     source1/source2: CHAN1–CHAN4.
     Returns the raw value string (delay in seconds, phase in degrees).
     """
     it = item.upper()
-    if it not in MEASURE_ITEMS_TWO_SOURCE:
-        raise ValueError(
-            f"'{item}' is not a two-source item. Valid: {sorted(MEASURE_ITEMS_TWO_SOURCE)}"
-        )
+    if is_dho(scope):
+        it = _DS1000Z_TO_DHO_TWO_SOURCE.get(it, it)
+        if it not in MEASURE_ITEMS_TWO_SOURCE_DHO:
+            raise ValueError(
+                f"'{item}' is not a DHO two-source item. "
+                f"Valid: {sorted(MEASURE_ITEMS_TWO_SOURCE_DHO)}"
+            )
+    else:
+        if it not in MEASURE_ITEMS_TWO_SOURCE:
+            raise ValueError(
+                f"'{item}' is not a two-source item. Valid: {sorted(MEASURE_ITEMS_TWO_SOURCE)}"
+            )
     s1 = source1.upper()
     s2 = source2.upper()
-    scope.write(f":MEASure:ITEM {it},{s1},{s2}")
+    if is_dho(scope):
+        scope.write(f":MEASure:STATistic:ITEM {it},{s1},{s2}")
+    else:
+        scope.write(f":MEASure:ITEM {it},{s1},{s2}")
     return scope.query(f":MEASure:ITEM? {it},{s1},{s2}").strip()
 
 
@@ -291,18 +352,26 @@ def set_channel(
     coupling: str | None = None,
     probe: float | None = None,
 ) -> None:
-    """Configure a channel. Only specified parameters are changed."""
+    """Configure a channel. Only specified parameters are changed.
+
+    Order matters: PROBe is written before SCALe/OFFSet because changing
+    probe attenuation rescales the displayed scale by the probe ratio on
+    both DS1000Z and DHO — writing SCAL first would cause a subsequent
+    PROB change to multiply it and land at the wrong V/div.
+    """
     ch = channel.upper()
     if display is not None:
         scope.write(f":{ch}:DISP {'ON' if display else 'OFF'}")
+    if probe is not None:
+        # Format with :g so 10.0 → "10" (DHO rejects "10.0" with -222 because its
+        # probe enum lists integers, not floats); fractional values like 0.1 stay "0.1".
+        scope.write(f":{ch}:PROB {probe:g}")
+    if coupling is not None:
+        scope.write(f":{ch}:COUP {coupling.upper()}")
     if scale is not None:
         scope.write(f":{ch}:SCAL {scale}")
     if offset is not None:
         scope.write(f":{ch}:OFFS {offset}")
-    if coupling is not None:
-        scope.write(f":{ch}:COUP {coupling.upper()}")
-    if probe is not None:
-        scope.write(f":{ch}:PROB {probe}")
     if err := check_scpi_error(scope):
         raise RuntimeError(f"SCPI error in set_channel({ch}): {err}")
 
@@ -349,6 +418,12 @@ def get_waveform(scope: pyvisa.resources.Resource, channel: str) -> dict:
     scope.write(f":WAV:SOUR {ch}")
     scope.write(":WAV:MODE NORM")
     scope.write(":WAV:FORM ASC")
+    if is_dho(scope):
+        # DHO :WAV:STOP defaults to 2, not the full screen buffer, so both PRE
+        # and DATA? return a 2-point slice unless we set the range explicitly.
+        # 1000 is the NORM max on all current DHO families; scope clamps if lower.
+        scope.write(":WAV:STAR 1")
+        scope.write(":WAV:STOP 1000")
 
     pre_str = scope.query(":WAV:PRE?").strip()
     pre = pre_str.split(",")
@@ -382,10 +457,14 @@ def get_waveform(scope: pyvisa.resources.Resource, channel: str) -> dict:
 def screenshot_png(scope: pyvisa.resources.Resource) -> bytes:
     """Return raw PNG bytes from the scope display.
 
-    Requests PNG directly from the scope (DS1000Z supports BMP24/BMP8/PNG/JPEG/TIFF).
+    DHO series: `:DISP:DATA? PNG` (single param).
+    DS1000Z series: `:DISP:DATA? ON,OFF,PNG` (color, invert, format).
     Strips the IEEE 488.2 TMC block header (#NXXXXXXXXX) and trailing \\n.
     """
-    scope.write(":DISPlay:DATA? ON,OFF,PNG")
+    if is_dho(scope):
+        scope.write(":DISPlay:DATA? PNG")
+    else:
+        scope.write(":DISPlay:DATA? ON,OFF,PNG")
     # Read the TMC block header: #<n><length_digits><data>
     # Must read by exact byte count — read_raw() stops at 0x0A which appears in PNG data
     prefix = scope.read_bytes(2)  # '#' + digit-count byte

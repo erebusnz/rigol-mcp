@@ -154,7 +154,10 @@ async def list_tools() -> list[types.Tool]:
             name="measure",
             description=(
                 "Query a single-source built-in measurement on a channel. "
-                "Stop acquisition first for stable readings. "
+                "For stable readings: on DS1000Z, stop acquisition first. "
+                "On DHO, keep acquisition running — the DHO measurement engine only populates "
+                "item values from live acquisitions; some items (VMAX/VMIN/VTOP/FREQUENCY/…) "
+                "return 9.9E37 if first queried on a stopped scope. "
                 "channel: CHAN1–CHAN4. "
                 "item: VMAX, VMIN, VPP, "
                 "VTOP (pulse top flat level, histogram-derived — not the same as VMAX), "
@@ -189,9 +192,14 @@ async def list_tools() -> list[types.Tool]:
             description=(
                 "Query a two-source delay or phase measurement between two channels. "
                 "source1 is the reference channel, source2 is the measured channel. "
-                "item: RDELAY (rising-edge delay, seconds), FDELAY (falling-edge delay, seconds), "
+                "DS1000Z items: RDELAY (rising-edge delay, seconds), FDELAY (falling-edge delay, seconds), "
                 "RPHASE (rising-edge phase, degrees), FPHASE (falling-edge phase, degrees). "
-                "Stop acquisition first for stable readings. "
+                "DHO series exposes a 4-way matrix: RRDELAY/RFDELAY/FRDELAY/FFDELAY and "
+                "RRPHASE/RFPHASE/FRPHASE/FFPHASE (first letter = source1 edge, second = source2 edge). "
+                "On DHO the DS1000Z names are auto-mapped to their homogeneous equivalents "
+                "(RDELAY→RRDELAY, FDELAY→FFDELAY, RPHASE→RRPHASE, FPHASE→FFPHASE). "
+                "For stable readings: on DS1000Z, stop acquisition first. "
+                "On DHO, keep acquisition running (see `measure` for details). "
                 "Do not call concurrently with any other rigol tool."
             ),
             inputSchema={
@@ -199,7 +207,11 @@ async def list_tools() -> list[types.Tool]:
                 "properties": {
                     "source1": {"type": "string", "enum": ["CHAN1", "CHAN2", "CHAN3", "CHAN4"], "description": "Reference channel"},
                     "source2": {"type": "string", "enum": ["CHAN1", "CHAN2", "CHAN3", "CHAN4"], "description": "Measured channel"},
-                    "item":    {"type": "string", "enum": ["RDELAY", "FDELAY", "RPHASE", "FPHASE"]},
+                    "item":    {"type": "string", "enum": [
+                        "RDELAY", "FDELAY", "RPHASE", "FPHASE",
+                        "RRDELAY", "RFDELAY", "FRDELAY", "FFDELAY",
+                        "RRPHASE", "RFPHASE", "FRPHASE", "FFPHASE",
+                    ]},
                 },
                 "required": ["source1", "source2", "item"],
             },
@@ -207,7 +219,7 @@ async def list_tools() -> list[types.Tool]:
         types.Tool(
             name="get_waveform",
             description=(
-                "Download and analyse the current waveform for a channel (screen buffer, ~1200 points). "
+                "Download and analyse the current waveform for a channel (NORM screen buffer, up to ~1000–1200 points depending on scope). "
                 "Stop or single-trigger the scope first for consistent data. "
                 "By default returns a plain-text analysis: signal shape, frequency/period, amplitude, "
                 "DC offset, cycle count, and data-quality warnings (e.g. mid-cycle edges, invalid frequency). "

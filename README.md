@@ -1,6 +1,6 @@
 # rigol-mcp
 
-MCP server for controlling a **Rigol DS1000Z series oscilloscope** over LAN. Exposes the scope as a set of tools that Claude (or any MCP client) can call to take measurements, configure the instrument, and capture screenshots — entirely through natural language.
+MCP server for controlling **Rigol DS1000Z and DHO series oscilloscopes** over LAN. Exposes the scope as a set of tools that Claude (or any MCP client) can call to take measurements, configure the instrument, and capture screenshots — entirely through natural language.
 
 ![Scope](media/example.png)
 
@@ -12,7 +12,7 @@ Unknown signal (square wave into LCR trap), wrong channel enabled, invalid timeb
 
 ## Supported Hardware
 
-**Rigol DS1000Z / MSO1000Z series:**
+**Rigol DS1000Z / MSO1000Z series (8-bit):**
 
 | Model | Channels | Notes |
 |---|---|---|
@@ -25,13 +25,21 @@ Unknown signal (square wave into LCR trap), wrong channel enabled, invalid timeb
 | MSO1074Z | 4 analog + 16 digital | |
 | MSO1104Z | 4 analog + 16 digital | |
 
+**Rigol DHO series (12-bit):**
+
+| Model | Channels | Notes |
+|---|---|---|
+| DHO924S | 4 analog + signal gen | 250 MHz |
+
+Other DHO models (DHO900/1000/4000 families) likely work with the same SCPI dialect but are not verified.
+
 The scope must be connected to your **local network via Ethernet** (rear panel RJ45). Wi-Fi is not supported by this hardware. USB-VISA is not currently supported — LAN only.
 
 ## Requirements
 
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/) (recommended) or pip
-- Rigol DS1000Z on the same LAN as your computer
+- Rigol DS1000Z or DHO series scope on the same LAN as your computer
 - SCPI over TCP/IP enabled on the scope (it is by default)
 
 ## Installation
@@ -132,8 +140,8 @@ Add to your `.mcp.json` (or Claude Desktop MCP config):
 | Tool | Description |
 |---|---|
 | `measure` | Query any single-channel measurement: VMAX, VMIN, VPP, VTOP, VBASE, VAMP, VAVG, VRMS, PVRMS, VUPPER, VMID, VLOWER, VARIANCE, FREQUENCY, PERIOD, PWIDTH, NWIDTH, PDUTY, NDUTY, RTIME, FTIME, OVERSHOOT, PRESHOOT, PSLEWRATE, NSLEWRATE, TVMAX, TVMIN, MAREA, MPAREA, PPULSES, NPULSES, PEDGES, NEDGES |
-| `measure_between` | Query delay or phase between two channels: RDELAY, FDELAY (seconds), RPHASE, FPHASE (degrees) |
-| `get_waveform` | Download and analyse waveform data (~1200 points); returns text analysis by default, raw time/voltage arrays with `raw_data=true` |
+| `measure_between` | Query delay or phase between two channels. DS1000Z: RDELAY, FDELAY, RPHASE, FPHASE. DHO: RRDELAY/RFDELAY/FRDELAY/FFDELAY, RRPHASE/RFPHASE/FRPHASE/FFPHASE (DS1000Z names auto-map to the homogeneous-edge DHO equivalents) |
+| `get_waveform` | Download and analyse waveform data (NORM screen buffer: up to 1200 pts on DS1000Z, 1000 on DHO); returns text analysis by default, raw time/voltage arrays with `raw_data=true` |
 
 ### Cursors
 
@@ -195,7 +203,7 @@ The server connects using **raw socket VISA** (`TCPIP0::<ip>::5555::SOCKET`), no
 
 - LAN only (no USB) - USB just adds more problems and OS-specific implementation challenges!
 - No support for math channels, digital channels (MSO), or protocol decode in the current tools yet — use `send_raw` for those
-- Waveform download uses NORMAL mode (screen buffer, ~1200 points); full memory depth (RAW mode, up to 56M points) is not yet implemented
+- Waveform download uses NORMAL mode (screen buffer — up to 1200 points on DS1000Z, 1000 on DHO); full memory depth (RAW mode, up to 56M on DS1000Z / 50M on DHO) is not yet implemented
 
 ## License
 
