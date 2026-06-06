@@ -260,7 +260,10 @@ def test_get_waveform_parses_block_and_stats():
     # PRE fields: [fmt,type,points,count,x_inc,x_origin,x_ref,...]
     pre = "0,0,5,1,1.000000e-06,-2.000000e-06,0,1,0,0"
     block = make_block(b"-1.0,0.0,2.5,1.0,-0.5")
-    s = FakeScope(responses={":WAV:PRE?": pre}, read_buffer=block)
+    s = FakeScope(
+        responses={":WAV:PRE?": pre, ":CHAN1:SCAL?": "1.000000e+00", ":CHAN1:OFFS?": "0"},
+        read_buffer=block,
+    )
     out = sc.get_waveform(s, "chan1")
     assert out["channel"] == "CHAN1"
     assert out["points"] == 5
@@ -270,6 +273,19 @@ def test_get_waveform_parses_block_and_stats():
     assert out["time_increment_s"] == 1e-6
     # times derived from x_origin + (i - x_ref) * x_inc
     assert out["time_start_s"] == pytest.approx(-2e-6)
+    # vertical scale/offset captured for the analyser's noise-floor check
+    assert out["y_scale_v_per_div"] == 1.0
+    assert out["y_offset_v"] == 0.0
+
+
+def test_get_waveform_tolerates_missing_vertical_scale():
+    # If the scope doesn't answer :SCAL?/:OFFS?, the fields degrade to None (no crash).
+    pre = "0,0,5,1,1.000000e-06,-2.000000e-06,0,1,0,0"
+    block = make_block(b"-1.0,0.0,2.5,1.0,-0.5")
+    s = FakeScope(responses={":WAV:PRE?": pre}, read_buffer=block)
+    out = sc.get_waveform(s, "chan1")
+    assert out["y_scale_v_per_div"] is None
+    assert out["y_offset_v"] is None
 
 
 # --------------------------------------------------------------------------- cursor math

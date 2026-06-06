@@ -1,5 +1,16 @@
 """Deterministic heuristics for waveform analysis."""
 
+# Rigol scope screens are 8 vertical divisions tall, so full-scale Vpp = scale × 8.
+SCREEN_V_DIVISIONS = 8
+# A capture whose Vpp fills less than this fraction of the vertical screen is treated as
+# noise-floor: the trace is dominated by ADC quantisation and front-end noise, so any
+# frequency/shape reading would be spurious. Below this we suppress the interpretation
+# entirely (and the secondary warnings it would otherwise spawn from noise crossings).
+NOISE_FILL_FRACTION = 0.10
+# Between NOISE_FILL_FRACTION and this, the signal is real but small relative to full
+# scale (so noisy and imprecise): still analysed, but flagged with a low-amplitude warning.
+LOW_FILL_FRACTION = 0.20
+
 
 def _fmt_si(value: float, unit: str) -> str:
     """Format a value with SI prefix (e.g. 1350000 Hz → '1.35 MHz')."""
@@ -40,6 +51,36 @@ def describe_waveform(data: dict) -> str:
         f"Voltage: Vpp={_fmt_si(vpp,'V')}, Vmin={_fmt_si(vmin,'V')}, "
         f"Vmax={_fmt_si(vmax,'V')}, DC offset={_fmt_si(vmean,'V')}"
     )
+
+    # --- Vertical scale context (optional: only when the caller passes the channel scale) ---
+    # Judging amplitude against the configured V/div is what tells noise apart from signal:
+    # 320 mVpp is a real trace at 50 mV/div but pure noise at 1.25 V/div. Without this the
+    # analyser would confidently report a frequency for what is just the noise floor.
+    y_scale = data.get("y_scale_v_per_div")
+    full_scale_vpp = y_scale * SCREEN_V_DIVISIONS if y_scale else None
+    fill_frac = vpp / full_scale_vpp if full_scale_vpp else None
+    if full_scale_vpp:
+        lines.append(
+            f"Vert   : {_fmt_si(y_scale,'V')}/div, {_fmt_si(full_scale_vpp,'V')} full screen "
+            f"({SCREEN_V_DIVISIONS} div) — signal fills {fill_frac*100:.1f}% of vertical range"
+        )
+
+    # --- Noise-floor guard: a trace that barely fills the screen is almost certainly noise
+    # (or an unconnected input). Flag it and suppress the shape/frequency interpretation
+    # rather than reporting a spurious oscillation. ---
+    if fill_frac is not None and fill_frac < NOISE_FILL_FRACTION:
+        divs_pp = vpp / y_scale
+        lines.append("Shape  : low-amplitude / likely noise — frequency & shape interpretation suppressed")
+        lines.append("")
+        lines.append("Warnings:")
+        lines.append(
+            f"  ⚠ Vpp ({_fmt_si(vpp,'V')}) is only {fill_frac*100:.1f}% of the {_fmt_si(full_scale_vpp,'V')} "
+            f"vertical full-scale window ({_fmt_si(y_scale,'V')}/div, ≈{divs_pp:.2f} divisions peak-to-peak). "
+            "At this level the trace is dominated by noise / ADC quantisation, so any frequency or shape "
+            "reading would be meaningless. Reduce V/div (zoom in vertically) until the signal fills a few "
+            "divisions, then re-capture — or check the probe/connection if you expected a larger signal."
+        )
+        return "\n".join(lines)
 
     # --- Zero crossings relative to mean (handles DC offset) ---
     v_c = [v - vmean for v in voltages]
@@ -118,6 +159,15 @@ def describe_waveform(data: dict) -> str:
     # --- Data quality warnings ---
     warnings = []
     edge_thr = max(vpp * 0.05, 4e-3)
+
+    # Low amplitude: real signal, but small relative to full scale so noisy and imprecise.
+    # (Below NOISE_FILL_FRACTION we already returned above; this is the 10–20% band.)
+    if fill_frac is not None and fill_frac < LOW_FILL_FRACTION:
+        warnings.append(
+            f"Low amplitude: Vpp ({_fmt_si(vpp,'V')}) fills only {fill_frac*100:.0f}% of the "
+            f"{_fmt_si(full_scale_vpp,'V')} vertical window ({_fmt_si(y_scale,'V')}/div). The reading is "
+            "usable but noisy — reduce V/div so the signal fills more of the screen for a cleaner measurement."
+        )
 
     # Clipping: many points within 2% of Vmin or Vmax rail
     clip_thr = max(vpp * 0.02, 1e-3)

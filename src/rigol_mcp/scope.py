@@ -522,6 +522,18 @@ def get_waveform(scope: pyvisa.resources.Resource, channel: str) -> dict:
     n = len(voltages)
     times = [x_origin + (i - x_ref) * x_inc for i in range(n)]
 
+    # Vertical scale/offset let the analyser judge amplitude against the full-screen range
+    # (8 vertical divisions) and flag noise-floor captures. Best-effort: if the scope does
+    # not answer, the analysis degrades gracefully to amplitude-only reporting.
+    try:
+        y_scale = float(scope.query(f":{ch}:SCAL?"))
+    except Exception:
+        y_scale = None
+    try:
+        y_offset = float(scope.query(f":{ch}:OFFS?"))
+    except Exception:
+        y_offset = None
+
     return {
         "channel":        ch,
         "points":         n,
@@ -531,6 +543,8 @@ def get_waveform(scope: pyvisa.resources.Resource, channel: str) -> dict:
         "vmin_v":         min(voltages),
         "vmax_v":         max(voltages),
         "vmean_v":        sum(voltages) / n if n else 0.0,
+        "y_scale_v_per_div": y_scale,
+        "y_offset_v":     y_offset,
         "times_s":        times,
         "voltages_v":     voltages,
     }

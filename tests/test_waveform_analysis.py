@@ -105,3 +105,47 @@ def test_output_is_multiline_string():
     text = describe_waveform(_make_capture(_sine()))
     assert isinstance(text, str)
     assert text.count("\n") >= 2
+
+
+# --------------------------------------------------------------------------- vertical-scale / noise floor
+
+def test_low_amplitude_flagged_as_noise_and_frequency_suppressed():
+    # 320 mVpp "signal" on a 1.25 V/div setting -> 10 V full screen -> 3.2% fill.
+    # This is the reported bug: noise was being read as a ~225 kHz oscillation.
+    data = _make_capture(_sine(n=1000, cycles=50, amp=0.16), x_inc=2e-6)
+    data["y_scale_v_per_div"] = 1.25
+    text = describe_waveform(data)
+    assert "likely noise" in text
+    assert "%" in text                 # fill fraction is referenced
+    assert "kHz" not in text           # spurious frequency is NOT reported
+    assert "oscillation" not in text   # spurious shape is NOT reported
+
+
+def test_real_signal_with_scale_still_analysed():
+    # 2 Vpp signal on 0.5 V/div -> 4 V full screen -> 50% fill: a genuine signal.
+    data = _make_capture(_sine(n=1000, cycles=5, amp=1.0), x_inc=1e-6)
+    data["y_scale_v_per_div"] = 0.5
+    text = describe_waveform(data)
+    assert "oscillation" in text
+    assert "kHz" in text
+    assert "full screen" in text       # vertical context line is shown
+    assert "Low amplitude" not in text  # 50% fill is comfortably large
+
+
+def test_small_but_real_signal_warns_low_amplitude():
+    # 1.5 Vpp on 1.25 V/div -> 10 V full screen -> 15% fill: real but small (10-20% band).
+    # Still analysed (shape + frequency reported) but flagged with a low-amplitude warning.
+    data = _make_capture(_sine(n=1000, cycles=5, amp=0.75), x_inc=1e-6)
+    data["y_scale_v_per_div"] = 1.25
+    text = describe_waveform(data)
+    assert "oscillation" in text       # interpretation NOT suppressed
+    assert "kHz" in text
+    assert "Low amplitude" in text      # but warned
+
+
+def test_noise_floor_check_skipped_without_scale():
+    # No vertical scale supplied -> behaviour unchanged (no noise warning, freq still reported).
+    data = _make_capture(_sine(n=1000, cycles=50, amp=0.16), x_inc=2e-6)
+    text = describe_waveform(data)
+    assert "likely noise" not in text
+    assert "oscillation" in text
