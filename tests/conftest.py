@@ -28,9 +28,14 @@ class FakeScope:
     Attribute writes (timeout, chunk_size, terminations) are just stored, like the real one.
     """
 
+    # Default identity is a DS1000Z so is_dho() resolves False unless a test overrides
+    # "*IDN?" with a DHO string. Every code path that calls is_dho() needs this stubbed.
+    DEFAULT_IDN = "RIGOL TECHNOLOGIES,DS1054Z,DS1ZA000000000,00.04.04.00.00"
+
     def __init__(self, responses=None, read_buffer: bytes = b"",
                  resource_name: str = "USB0::0xFAKE::INSTR"):
-        self.responses = dict(responses or {})
+        self.responses = {"*IDN?": self.DEFAULT_IDN}
+        self.responses.update(responses or {})
         self._buf = bytes(read_buffer)
         self._pos = 0
         self.resource_name = resource_name
@@ -111,7 +116,9 @@ def clean_env_and_cache(monkeypatch):
     scope_mod._rm = None
     scope_mod._scope = None
     scope_mod._usb_backend_hint = None
+    scope_mod._driver = None
     yield
     scope_mod._rm = None
     scope_mod._scope = None
     scope_mod._usb_backend_hint = None
+    scope_mod._driver = None

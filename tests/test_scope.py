@@ -4,6 +4,7 @@ SCPI helpers and parsing. All VISA interaction is faked (see conftest)."""
 import pytest
 
 from rigol_mcp import scope as sc
+from rigol_mcp import drivers
 from tests.conftest import FakeScope, FakeResourceManager, make_block
 
 
@@ -340,7 +341,7 @@ def test_measure_rejects_unknown_item():
 
 def test_measure_between_rejects_single_source_item():
     s = FakeScope()
-    with pytest.raises(ValueError, match="not a two-source"):
+    with pytest.raises(ValueError, match="not a valid two-source item"):
         sc.measure_between(s, "CHAN1", "CHAN2", "VPP")
 
 
@@ -363,3 +364,144 @@ def test_autoscale_raises_timeout_during_call_and_restores():
     sc.autoscale(s)
     assert seen["timeout_during"] == sc._SLOW_OP_TIMEOUT_MS   # bumped for the slow op
     assert s.timeout == sc._USB_TIMEOUT_MS                    # restored afterwards
+
+
+# --------------------------------------------------------------------------- dialect drivers
+
+_DHO_IDN = "RIGOL TECHNOLOGIES,DHO924S,DHO9A000000000,00.01.05"
+
+
+def test_get_driver_detects_dho_and_caches():
+    s = FakeScope(responses={"*IDN?": _DHO_IDN})
+    assert sc.get_driver(s).name == "DHO"
+    # Result is cached: changing the reported identity does not change the answer until
+    # invalidate_scope() resets it.
+    s.responses["*IDN?"] = FakeScope.DEFAULT_IDN
+    assert sc.get_driver(s).name == "DHO"
+
+
+def test_get_driver_defaults_to_ds1000z():
+    s = FakeScope()  # DEFAULT_IDN is a DS1054Z
+    assert sc.get_driver(s).name == "DS1000Z"
+
+
+def test_driver_for_recognises_families_and_rejects_unknown():
+    assert drivers.driver_for("RIGOL TECHNOLOGIES,DHO924S,SN,1.0").name == "DHO"
+    assert drivers.driver_for("RIGOL TECHNOLOGIES,DS1054Z,SN,1.0").name == "DS1000Z"
+    assert drivers.driver_for("RIGOL TECHNOLOGIES,MSO1104Z,SN,1.0").name == "DS1000Z"
+    # An identity no driver claims is an error, not a silent guess.
+    with pytest.raises(RuntimeError, match="Unsupported instrument"):
+        drivers.driver_for("RIGOL TECHNOLOGIES,XYZ9000,SN,1.0")
+
+
+def test_autoscale_dho_uses_autoset():
+    s = FakeScope(responses={"*IDN?": _DHO_IDN, "*OPC?": "1", ":SYSTem:ERRor?": "0"})
+    s.timeout = sc._USB_TIMEOUT_MS
+    sc.autoscale(s)
+    assert ":AUToset" in s.written
+    assert not any(c.startswith(":AUToscale") for c in s.written)
+
+
+def test_screenshot_png_dho_uses_single_param(monkeypatch):
+    monkeypatch.setattr(sc, "_usb_backend_hint", "@py")
+    png = b"\x89PNG\r\n\x1a\n" + bytes(range(16))
+    s = FakeScope(responses={"*IDN?": _DHO_IDN}, read_buffer=make_block(png))
+    assert sc.screenshot_png(s) == png
+    assert ":DISPlay:DATA? PNG" in s.written
+    assert ":DISPlay:DATA? ON,OFF,PNG" not in s.written
+
+
+def test_screenshot_png_ds1000z_uses_three_param(monkeypatch):
+    monkeypatch.setattr(sc, "_usb_backend_hint", "@py")
+    png = b"\x89PNG\r\n\x1a\n" + bytes(range(16))
+    s = FakeScope(read_buffer=make_block(png))  # DS1000Z default identity
+    assert sc.screenshot_png(s) == png
+    assert ":DISPlay:DATA? ON,OFF,PNG" in s.written
+
+
+def test_get_waveform_dho_sets_point_range():
+    pre = "0,0,2,1,1.000000e-06,0,0,1,0,0"
+    block = make_block(b"0.1,0.2")
+    s = FakeScope(
+        responses={"*IDN?": _DHO_IDN, ":WAV:PRE?": pre,
+                   ":CHAN1:SCAL?": "0.5", ":CHAN1:OFFS?": "0"},
+        read_buffer=block,
+    )
+    sc.get_waveform(s, "CHAN1")
+    assert ":WAV:STAR 1" in s.written
+    assert ":WAV:STOP 1000" in s.written
+
+
+def test_get_waveform_ds1000z_omits_point_range():
+    pre = "0,0,2,1,1.000000e-06,0,0,1,0,0"
+    s = FakeScope(
+        responses={":WAV:PRE?": pre, ":CHAN1:SCAL?": "0.5", ":CHAN1:OFFS?": "0"},
+        read_buffer=make_block(b"0.1,0.2"),
+    )
+    sc.get_waveform(s, "CHAN1")
+    assert not any(c.startswith(":WAV:STAR") for c in s.written)
+
+
+def test_measure_dho_uses_statistic_item():
+    s = FakeScope(responses={"*IDN?": _DHO_IDN, ":MEASure:ITEM?": "1.234000e+00"})
+    assert sc.measure(s, "CHAN1", "vpp") == "1.234000e+00"
+    assert ":MEASure:STATistic:ITEM VPP,CHAN1" in s.written
+    assert ":MEASure:ITEM VPP,CHAN1" not in s.written
+
+
+def test_measure_between_dho_maps_ds1000z_names():
+    s = FakeScope(responses={"*IDN?": _DHO_IDN, ":MEASure:ITEM?": "1.0e-06"})
+    sc.measure_between(s, "CHAN1", "CHAN2", "RDELAY")
+    # DS1000Z RDELAY auto-maps to the DHO rise-to-rise item via STATistic registration.
+    assert ":MEASure:STATistic:ITEM RRDELAY,CHAN1,CHAN2" in s.written
+
+
+def test_measure_between_dho_accepts_native_matrix_item():
+    s = FakeScope(responses={"*IDN?": _DHO_IDN, ":MEASure:ITEM?": "1.0e-06"})
+    sc.measure_between(s, "CHAN1", "CHAN2", "RFDELAY")
+    assert ":MEASure:STATistic:ITEM RFDELAY,CHAN1,CHAN2" in s.written
+
+
+def test_measure_between_dho_rejects_unknown_item():
+    s = FakeScope(responses={"*IDN?": _DHO_IDN})
+    with pytest.raises(ValueError, match="not a valid two-source item for DHO"):
+        sc.measure_between(s, "CHAN1", "CHAN2", "BOGUS")
+
+
+def test_set_cursor_positions_dho_uses_seconds():
+    s = FakeScope(responses={"*IDN?": _DHO_IDN, ":SYSTem:ERRor?": "0"})
+    sc.set_cursor_positions(s, mode="MANUAL", ax=0.001, bx=0.002)
+    assert ":CURSor:MANual:CAX 0.001" in s.written
+    assert ":CURSor:MANual:CBX 0.002" in s.written
+
+
+def test_set_cursor_positions_ds1000z_uses_pixels():
+    s = FakeScope(responses={":TIM:SCAL?": "1.000000e-03", ":TIM:OFFS?": "0",
+                             ":SYSTem:ERRor?": "0"})
+    sc.set_cursor_positions(s, mode="MANUAL", ax=0.0)  # screen-centre time
+    assert f":CURSor:MANual:AX {sc._SCREEN_CENTER}" in s.written
+
+
+def test_set_channel_writes_probe_before_scale_and_formats_g():
+    s = FakeScope(responses={":SYSTem:ERRor?": "0"})
+    sc.set_channel(s, "CHAN1", scale=0.5, probe=10.0)
+    # PROBe must precede SCALe (probe attenuation rescales V/div), and 10.0 -> "10".
+    assert ":CHAN1:PROB 10" in s.written
+    assert ":CHAN1:PROB 10.0" not in s.written
+    assert s.written.index(":CHAN1:PROB 10") < s.written.index(":CHAN1:SCAL 0.5")
+
+
+def test_check_scpi_error_drains_queue_returns_first():
+    class DrainScope(FakeScope):
+        def __init__(self, errors):
+            super().__init__()
+            self._errs = list(errors)
+
+        def query(self, cmd):
+            if cmd.strip() == ":SYSTem:ERRor?":
+                return self._errs.pop(0) if self._errs else "0"
+            return super().query(cmd)
+
+    s = DrainScope(['-113,"Undefined header"', '-222,"Data out of range"', "0"])
+    assert sc.check_scpi_error(s) == '-113,"Undefined header"'
+    assert s._errs == []  # queue fully drained, not left for the next tool call
