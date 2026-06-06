@@ -351,24 +351,44 @@ def autoscale(scope: pyvisa.resources.Resource) -> None:
         raise RuntimeError(f"SCPI error after autoscale: {err}")
 
 
-def idn(scope: pyvisa.resources.Resource) -> dict:
-    """Return instrument identity plus connection diagnostics."""
-    idn_str = scope.query("*IDN?").strip()
-    transport = "USB" if usb_in_use() else "LAN"
-    backend = active_backend() or "n/a"
-    resource = getattr(scope, "resource_name", "unknown")
-    try:
-        drv = get_driver(scope)
-        driver_name = drv.name
-    except Exception as e:
-        driver_name = f"undetected ({e})"
-    return {
-        "idn":          idn_str,
-        "transport":    transport,
-        "backend":      backend,
-        "resource":     resource,
-        "driver":       driver_name,
+def idn(scope: pyvisa.resources.Resource) -> str:
+    """Return the instrument identification string."""
+    return scope.query("*IDN?").strip()
+
+
+def connection_info() -> dict:
+    """Report connection configuration and current session state.
+
+    Performs NO device I/O and never raises — safe to call before, during, or after a
+    connection failure. Use to build diagnostic output that surfaces what the server was
+    *trying* to do, separately from whether the device responded. Without this, every
+    failure surfaces as the same opaque ``VI_ERROR_TMO`` regardless of whether the server
+    was configured for LAN-to-an-unreachable-IP or USB-with-a-wedged-endpoint.
+    """
+    rigol_usb    = os.environ.get("RIGOL_USB", "").strip()
+    rigol_ip     = os.environ.get("RIGOL_IP", "").strip()
+    rigol_serial = os.environ.get("RIGOL_USB_SERIAL", "").strip()
+    info: dict = {
+        "transport": "USB" if usb_in_use() else "LAN",
+        "RIGOL_USB": rigol_usb or "(unset → LAN)",
+        "RIGOL_IP":  rigol_ip or "(unset)",
     }
+    if usb_in_use():
+        info["RIGOL_USB_SERIAL"] = rigol_serial or "(unset → any Rigol scope)"
+        info["backend_hint"]     = _usb_backend_hint or "(none yet — will auto-detect)"
+    else:
+        info["lan_target"] = (f"TCPIP0::{rigol_ip}::5555::SOCKET"
+                              if rigol_ip else "(RIGOL_IP not set)")
+    if _scope is not None:
+        info["session"]  = "cached/open"
+        info["resource"] = getattr(_scope, "resource_name", "?")
+        # _driver is set lazily on first dialect-using call; report it if known. Never
+        # query *IDN? here — connection_info must remain I/O-free even when the device
+        # has gone unresponsive.
+        info["driver"]   = _driver.name if _driver is not None else "(not detected yet)"
+    else:
+        info["session"] = "not yet opened"
+    return info
 
 
 # All measurement items supported by DS1000Z :MEASure:ITEM

@@ -29,7 +29,7 @@ from rigol_mcp.scope import (
     get_cursor_mode, set_cursor_mode, set_cursor_positions, get_cursor_values,
     send_raw, check_scpi_error,
     run, stop, single, autoscale,
-    idn, measure, measure_between, MEASURE_ITEMS, MEASURE_ITEMS_TWO_SOURCE,
+    idn, connection_info, measure, measure_between, MEASURE_ITEMS, MEASURE_ITEMS_TWO_SOURCE,
     get_scope_state, set_channel, set_timebase, set_trigger, get_waveform,
 )
 
@@ -98,10 +98,14 @@ async def list_tools() -> list[types.Tool]:
             name="idn",
             description=(
                 "Identify the instrument and report connection details. "
-                "Returns the *IDN? string (make, model, serial, firmware) plus: "
-                "transport (LAN or USB), backend (@py=pyvisa-py/WinUSB or @ivi=NI-VISA/USBTMC), "
-                "resource string, and the detected dialect driver (DS1000Z, DHO, …). "
-                "Call this first to verify connectivity and confirm the correct driver was selected. "
+                "Always returns the connection block (transport, RIGOL_USB/RIGOL_IP env "
+                "vars, backend hint, resource string, session state, and the detected "
+                "dialect driver — DS1000Z, DHO, …) followed by the scope's *IDN? string. "
+                "If the *IDN? query fails, the connection block is still returned with "
+                "the error — use it to spot LAN-vs-USB misconfig or an unreachable IP "
+                "before assuming the scope itself is the problem. "
+                "Call this first to verify connectivity and confirm the correct driver "
+                "was selected. "
                 "Do not call concurrently with any other rigol tool."
             ),
             inputSchema={"type": "object", "properties": {}, "required": []},
@@ -397,15 +401,22 @@ async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
         ]
 
     if name == "idn":
-        info = await _call(idn)
-        text = (
-            f"IDN      : {info['idn']}\n"
-            f"Transport: {info['transport']}\n"
-            f"Backend  : {info['backend']}\n"
-            f"Resource : {info['resource']}\n"
-            f"Driver   : {info['driver']}"
-        )
-        return [types.TextContent(type="text", text=text)]
+        # Always emit the connection diagnostic first — it never depends on the device
+        # responding, so it surfaces config issues (LAN vs USB, wrong IP) that would
+        # otherwise be hidden behind an opaque VI_ERROR_TMO timeout from the *IDN? query.
+        info = connection_info()
+        diag = "\n".join(f"  {k:18s}: {v}" for k, v in info.items())
+        try:
+            idn_str = await _call(idn)
+            return [types.TextContent(type="text",
+                text=f"Connection:\n{diag}\n\nIDN: {idn_str}")]
+        except Exception as exc:
+            return [types.TextContent(type="text",
+                text=f"Connection:\n{diag}\n\n"
+                     f"*IDN? query FAILED: {type(exc).__name__}: {exc}\n\n"
+                     "The connection details above show what the server was attempting "
+                     "when the query failed — check that transport (USB/LAN), RIGOL_IP, "
+                     "and RIGOL_USB match how the scope is actually connected.")]
 
     if name == "get_scope_state":
         state = await _call(get_scope_state)
