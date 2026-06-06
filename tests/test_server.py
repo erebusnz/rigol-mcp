@@ -137,3 +137,32 @@ async def test_screenshot_no_reconnect_on_ivi_backend(monkeypatch, tmp_path):
 async def test_screenshot_no_reconnect_on_lan(monkeypatch, tmp_path):
     _, calls, _ = await _run_screenshot(monkeypatch, tmp_path, usb=False, backend=None)
     assert calls["invalidate"] == 0
+
+
+# --------------------------------------------------------------------------- send_raw gating
+
+async def test_send_raw_hidden_by_default():
+    names = {t.name for t in await srv.list_tools()}
+    assert "send_raw" not in names
+
+
+async def test_send_raw_listed_when_enabled(monkeypatch):
+    monkeypatch.setenv("RIGOL_ENABLE_SEND_RAW", "1")
+    names = {t.name for t in await srv.list_tools()}
+    assert "send_raw" in names
+
+
+async def test_send_raw_call_rejected_when_disabled():
+    with pytest.raises(ValueError, match="send_raw is disabled"):
+        await srv.call_tool("send_raw", {"command": ":CHAN1:SCAL?"})
+
+
+async def test_send_raw_call_works_when_enabled(monkeypatch):
+    monkeypatch.setenv("RIGOL_ENABLE_SEND_RAW", "1")
+
+    async def fake_call(fn, *a, **k):
+        return "1.000000e+00"
+
+    monkeypatch.setattr(srv, "_call", fake_call)
+    result = await srv.call_tool("send_raw", {"command": ":CHAN1:SCAL?"})
+    assert result[0].text == "1.000000e+00"

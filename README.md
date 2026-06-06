@@ -85,6 +85,7 @@ RIGOL_IP=192.168.1.123
 | `RIGOL_IP` | (required for LAN) | Scope IP address |
 | `RIGOL_USB` | (unset) | Set to `1` to connect over USB instead of LAN. The first Rigol USB scope is found automatically. |
 | `RIGOL_USB_SERIAL` | (unset) | When several Rigol scopes are on USB, pin a specific one by serial number. |
+| `RIGOL_ENABLE_SEND_RAW` | (unset) | Set to `1` to enable the `send_raw` tool (arbitrary SCPI). Off by default — see [Tools](#tools). |
 | `RIGOL_SCREENSHOT_DIR` | `screenshots/` | Directory for saved PNG screenshots |
 
 ### USB connection
@@ -213,7 +214,7 @@ For **USB**, replace the `RIGOL_IP` entry in `env` with `"RIGOL_USB": "1"` (see 
 | Tool | Description |
 |---|---|
 | `screenshot` | Capture display as PNG — returns image inline and saves to disk |
-| `send_raw` | Send any SCPI command directly (escape hatch) |
+| `send_raw` | Send any SCPI command directly (escape hatch). **Disabled by default** — set `RIGOL_ENABLE_SEND_RAW=1` to expose it, since arbitrary SCPI can leave the scope in any state. |
 | `check_error` | Query the SCPI error queue |
 
 ## Example Prompts

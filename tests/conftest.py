@@ -105,7 +105,8 @@ class FakeResourceManager:
 def clean_env_and_cache(monkeypatch):
     """Isolate every test: clear RIGOL_* env (incl. anything loaded from .env) and reset
     the module-level cached connection / backend hint in rigol_mcp.scope."""
-    for var in ("RIGOL_IP", "RIGOL_USB", "RIGOL_USB_SERIAL", "RIGOL_SCREENSHOT_DIR"):
+    for var in ("RIGOL_IP", "RIGOL_USB", "RIGOL_USB_SERIAL", "RIGOL_SCREENSHOT_DIR",
+                "RIGOL_ENABLE_SEND_RAW"):
         monkeypatch.delenv(var, raising=False)
     scope_mod._rm = None
     scope_mod._scope = None

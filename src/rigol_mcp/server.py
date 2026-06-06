@@ -47,6 +47,14 @@ _RETRY_BACKOFF = 0.2         # seconds to let a flaky USB link settle before ret
 # arguments, SCPI errors) are bugs/usage errors and must propagate unretried.
 _RETRYABLE = (pyvisa.errors.VisaIOError, UnicodeDecodeError, OSError)
 
+# send_raw sends arbitrary SCPI and can put the scope in any state, so it is opt-in:
+# it is only advertised and accepted when RIGOL_ENABLE_SEND_RAW is set to a truthy value.
+_SEND_RAW_ENV = "RIGOL_ENABLE_SEND_RAW"
+
+
+def _send_raw_enabled() -> bool:
+    return os.environ.get(_SEND_RAW_ENV, "").strip().lower() not in ("", "0", "false", "no", "off")
+
 
 async def _call(fn, *args, **kwargs):
     """Call fn(scope, *args, **kwargs) with the cached connection.
@@ -76,7 +84,7 @@ async def _call(fn, *args, **kwargs):
 
 @server.list_tools()
 async def list_tools() -> list[types.Tool]:
-    return [
+    tools = [
         types.Tool(
             name="screenshot",
             description=(
@@ -335,6 +343,10 @@ async def list_tools() -> list[types.Tool]:
             inputSchema={"type": "object", "properties": {}, "required": []},
         ),
     ]
+    # send_raw is an arbitrary-SCPI escape hatch — only expose it when explicitly enabled.
+    if not _send_raw_enabled():
+        tools = [t for t in tools if t.name != "send_raw"]
+    return tools
 
 
 @server.call_tool()
@@ -451,6 +463,10 @@ async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
         return [types.TextContent(type="text", text=lines)]
 
     if name == "send_raw":
+        if not _send_raw_enabled():
+            raise ValueError(
+                f"send_raw is disabled. Set {_SEND_RAW_ENV}=1 to enable arbitrary SCPI commands."
+            )
         response = await _call(send_raw, arguments["command"])
         return [types.TextContent(type="text", text=response or "(no response)")]
 
