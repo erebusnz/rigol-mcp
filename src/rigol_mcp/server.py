@@ -10,6 +10,13 @@ from pathlib import Path
 import asyncio
 import time
 
+from dotenv import load_dotenv
+
+# Load configuration from a local .env file (e.g. RIGOL_IP, RIGOL_USB, RIGOL_USB_SERIAL)
+# before anything reads os.environ. Existing environment variables (e.g. those passed via
+# the MCP client's `env` block) take precedence and are not overridden.
+load_dotenv()
+
 import mcp.types as types
 import pyvisa
 from mcp.server import Server
@@ -17,7 +24,7 @@ from mcp.server.stdio import stdio_server
 
 from rigol_mcp.waveform_analysis import describe_waveform as _describe_waveform
 from rigol_mcp.scope import (
-    get_scope, invalidate_scope,
+    get_scope, invalidate_scope, usb_in_use, active_backend,
     screenshot_png,
     get_cursor_mode, set_cursor_mode, set_cursor_positions, get_cursor_values,
     send_raw, check_scpi_error,
@@ -33,22 +40,36 @@ _scope_lock = asyncio.Lock()
 _last_call_time: float = 0.0
 _MIN_INTERVAL = 0.1          # 100 ms minimum between SCPI operations
 _POST_SCREENSHOT_DELAY = 2.0 # scope needs recovery time after large display transfer
+_MAX_ATTEMPTS = 3            # initial try + 2 reconnect-and-retry attempts
+_RETRY_BACKOFF = 0.2         # seconds to let a flaky USB link settle before retrying
+
+# Communication faults that warrant a reconnect-and-retry. Other exceptions (e.g. bad
+# arguments, SCPI errors) are bugs/usage errors and must propagate unretried.
+_RETRYABLE = (pyvisa.errors.VisaIOError, UnicodeDecodeError, OSError)
 
 
 async def _call(fn, *args, **kwargs):
     """Call fn(scope, *args, **kwargs) with the cached connection.
-    Serialises concurrent calls via a lock, enforces 100 ms minimum inter-command
-    gap, and reconnects on communication errors."""
+
+    Serialises concurrent calls via a lock, enforces a minimum inter-command gap, and
+    recovers from communication faults by reconnecting and retrying (up to _MAX_ATTEMPTS).
+    USBTMC links in particular occasionally drop the first access after opening or after a
+    large transfer; a reconnect on a fresh session clears it. The last failure propagates.
+    """
     global _last_call_time
     async with _scope_lock:
         elapsed = time.monotonic() - _last_call_time
         if elapsed < _MIN_INTERVAL:
             await asyncio.sleep(_MIN_INTERVAL - elapsed)
         try:
-            return fn(get_scope(), *args, **kwargs)
-        except (pyvisa.errors.VisaIOError, UnicodeDecodeError, OSError):
-            invalidate_scope()
-            return fn(get_scope(), *args, **kwargs)
+            for attempt in range(1, _MAX_ATTEMPTS + 1):
+                try:
+                    return fn(get_scope(), *args, **kwargs)
+                except _RETRYABLE:
+                    invalidate_scope()  # drop the session so the next attempt reconnects
+                    if attempt == _MAX_ATTEMPTS:
+                        raise
+                    await asyncio.sleep(_RETRY_BACKOFF)
         finally:
             _last_call_time = time.monotonic()
 
@@ -318,8 +339,18 @@ async def list_tools() -> list[types.Tool]:
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
+    global _last_call_time
     if name == "screenshot":
         png_bytes = await _call(screenshot_png)
+        # pyvisa-py (@py, used with the WinUSB driver) can leave the USBTMC stream in a
+        # state where the command right after a large screenshot transfer intermittently
+        # times out; dropping the connection forces a clean USBTMC session on the next
+        # call (~1 s, within the recovery window below). NI-VISA (@ivi, native USBTMC
+        # driver) recovers on its own and a reconnect there actually disrupts the next
+        # command — so reconnect only on @py.
+        if usb_in_use() and active_backend() == "@py":
+            async with _scope_lock:
+                invalidate_scope()
         # Advance the cooldown timestamp so the next _call waits for the scope to recover
         # after the large display transfer before sending further SCPI commands.
         _last_call_time = time.monotonic() + _POST_SCREENSHOT_DELAY

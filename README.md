@@ -25,7 +25,7 @@ Unknown signal (square wave into LCR trap), wrong channel enabled, invalid timeb
 | MSO1074Z | 4 analog + 16 digital | |
 | MSO1104Z | 4 analog + 16 digital | |
 
-The scope must be connected to your **local network via Ethernet** (rear panel RJ45). Wi-Fi is not supported by this hardware. USB-VISA is not currently supported — LAN only.
+The scope connects either over your **local network via Ethernet** (rear panel RJ45) or over **USB** (rear panel USB-B device port). Wi-Fi is not supported by this hardware. LAN is the default; USB is used when `RIGOL_USB` is set (see [Configuration](#configuration)).
 
 ## Requirements
 
@@ -79,8 +79,41 @@ RIGOL_IP=192.168.1.123
 
 | Variable | Default | Description |
 |---|---|---|
-| `RIGOL_IP` | (required) | Scope IP address |
+| `RIGOL_IP` | (required for LAN) | Scope IP address |
+| `RIGOL_USB` | (unset) | Set to a truthy value (`1`) to connect over USB instead of LAN. The first Rigol USB scope is auto-discovered. |
+| `RIGOL_USB_SERIAL` | (unset) | When several Rigol scopes are on USB, pin a specific one by serial number. |
 | `RIGOL_SCREENSHOT_DIR` | `screenshots/` | Directory for saved PNG screenshots |
+
+### USB connection
+
+When `RIGOL_USB` is truthy, USB transport is **preferred** over LAN: the server scans
+USB for a Rigol device (vendor ID `0x1AB1`) and connects to it via USBTMC. If no Rigol
+USB scope is found, the server raises an error rather than silently falling back to LAN.
+With multiple scopes connected, set `RIGOL_USB_SERIAL` to disambiguate.
+
+```
+RIGOL_USB=1
+# RIGOL_USB_SERIAL=DS1ZA000000000   # only needed if more than one scope is on USB
+```
+
+USB uses the pure-Python `pyvisa-py` backend with `pyusb` and a bundled `libusb`
+(`libusb-package`) — no NI-VISA required.
+
+#### Windows: install the WinUSB driver with Zadig
+
+On Windows, `libusb` cannot claim the scope through Rigol's stock USBTMC driver, so you
+must replace it with **WinUSB**. Do this once per scope:
+
+1. Connect the scope over USB and power it on.
+2. Download and run [Zadig](https://zadig.akeo.ie/).
+3. In Zadig, choose **Options → List All Devices**.
+4. From the device dropdown, select **"DS1000Z Series"** (the Rigol scope).
+5. Set the target driver to **WinUSB** and click **Install Driver** (or **Replace Driver**).
+6. Wait for "The driver was installed successfully", then set `RIGOL_USB=1` and connect.
+
+> **Note:** replacing the driver with WinUSB means Rigol's own **UltraSigma / Ultra Scope**
+> software (which needs the USBTMC driver) will no longer see the scope over USB until you
+> revert the driver in Device Manager. LAN access is unaffected.
 
 ## Claude Desktop / Claude Code Setup
 
@@ -181,19 +214,34 @@ Claude / MCP client
 rigol_mcp.server      ← tool definitions, request routing
         │  Python function calls
 rigol_mcp.scope       ← VISA connection, SCPI command helpers
-        │  SCPI over TCP/IP (port 5555)
-Rigol DS1000Z         ← 192.168.1.123
+        │  SCPI over TCP/IP (port 5555) or USBTMC
+Rigol DS1000Z         ← 192.168.1.123  /  USB
 ```
 
-The VISA connection is cached across tool calls (one TCP connection per server session) and reconnects automatically on network errors.
+The VISA connection is cached across tool calls (one connection per server session) and reconnects automatically on communication errors.
 
 ## SCPI Transport
 
-The server connects using **raw socket VISA** (`TCPIP0::<ip>::5555::SOCKET`), not VXI-11. This avoids the NI-VISA dependency and works with the pure-Python `pyvisa-py` backend. It also eliminates the VXI-11 handshake overhead, making individual commands faster.
+By default the server connects using **raw socket VISA** (`TCPIP0::<ip>::5555::SOCKET`), not VXI-11. This avoids the NI-VISA dependency and works with the pure-Python `pyvisa-py` backend. It also eliminates the VXI-11 handshake overhead, making individual commands faster.
+
+When `RIGOL_USB` is set, the server instead connects over **USBTMC** (`USB0::0x1AB1::<model>::<serial>::INSTR`), discovering the scope automatically. It auto-selects whichever VISA backend can see the scope:
+
+- **`@py`** (`pyvisa-py` + `pyusb` + bundled `libusb`) — for a USB interface bound to **WinUSB** (no NI-VISA needed).
+- **`@ivi`** (NI-VISA / IVI VISA) — for the **native USBTMC driver**, when NI-VISA is installed.
+
+The two backends frame USBTMC reads differently, so block reads (waveform/screenshot) are read by exact byte count on `@py` and via native message reads (`read_raw`) on `@ivi`. Transport and backend selection live in `rigol_mcp.scope.get_scope` / `_open_usb_scope`.
+
+## Testing
+
+Unit tests are fully offline — the VISA layer is faked, so no instrument is required.
+
+```bash
+uv run --extra test pytest      # or: uv sync --extra test && uv run pytest
+```
 
 ## Limitations
 
-- LAN only (no USB) - USB just adds more problems and OS-specific implementation challenges!
+- USB needs a VISA-compatible driver on the scope's USBTMC interface: either **WinUSB** (bind via [Zadig](https://zadig.akeo.ie/), uses the built-in `pyvisa-py`) or the **native USBTMC driver** (requires NI-VISA). LAN needs no driver setup.
 - No support for math channels, digital channels (MSO), or protocol decode in the current tools yet — use `send_raw` for those
 - Waveform download uses NORMAL mode (screen buffer, ~1200 points); full memory depth (RAW mode, up to 56M points) is not yet implemented
 

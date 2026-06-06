@@ -11,6 +11,15 @@ dependencies = [
     "mcp[cli]>=1.0.0",
     "pyvisa>=1.14.0",
     "pyvisa-py>=0.7.0",
+    "pyusb>=1.2.0",          # USBTMC transport for pyvisa-py
+    "libusb-package>=1.0.26.0",  # bundled libusb backend (so USB works without a separate install)
+    "python-dotenv>=1.0.0",  # load configuration from a local .env file
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
 ]
 
 [project.scripts]
@@ -18,3 +27,10 @@ rigol-mcp = "rigol_mcp.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/rigol_mcp"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"

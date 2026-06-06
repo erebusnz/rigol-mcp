@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+
+      # Installs the project (src/ layout) plus the test extra from the locked versions.
+      # Tests are fully offline — no instrument, NI-VISA, or system libusb required.
+      - name: Install dependencies
+        run: uv sync --locked --extra test
+
+      - name: Run tests
+        run: uv run --no-sync pytest

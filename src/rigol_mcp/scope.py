@@ -9,29 +9,180 @@ _POINTS_PER_DIV = 50          # empirically confirmed: 600 points across 12 divi
 _SCREEN_POINTS = _SCREEN_DIVISIONS * _POINTS_PER_DIV  # 600
 _SCREEN_CENTER = _SCREEN_POINTS // 2                  # 300
 
+# Rigol Technologies USB vendor ID — used to identify the scope among USB devices.
+_RIGOL_USB_VID = 0x1AB1
+
+# Per-transport default I/O timeout (ms). USB uses a shorter timeout so the rare USBTMC
+# read that hangs recovers quickly: pyvisa-py sends the USBTMC Bulk-IN abort on read
+# failure (pyvisa-py PR #179) and our caller reconnects, so a stuck read costs ~10 s
+# instead of 30 s. LAN keeps the longer timeout. Genuinely slow operations (autoscale)
+# raise the timeout locally — see autoscale().
+_USB_TIMEOUT_MS = 10_000
+_LAN_TIMEOUT_MS = 30_000
+# Headroom for blocking operations such as :AUToscale;*OPC? (measured ~4 s over USB).
+_SLOW_OP_TIMEOUT_MS = 30_000
+
 # Module-level cached connection
 _rm: pyvisa.ResourceManager | None = None
 _scope: pyvisa.resources.Resource | None = None
 
 
-def get_resource_string() -> str:
+def _usb_preferred() -> bool:
+    """True if RIGOL_USB is set to a truthy value, requesting USB transport."""
+    return os.environ.get("RIGOL_USB", "").strip().lower() not in ("", "0", "false", "no", "off")
+
+
+def usb_in_use() -> bool:
+    """True when the active transport is USB (USBTMC) rather than LAN."""
+    return _usb_preferred()
+
+
+def active_backend() -> str | None:
+    """The pyvisa backend the live USB connection was opened on ("@py" or "@ivi"),
+    or None if no USB connection has been established yet."""
+    return _usb_backend_hint
+
+
+def get_lan_resource_string() -> str:
     ip = os.environ.get("RIGOL_IP")
     if not ip:
         raise RuntimeError("RIGOL_IP environment variable is not set")
     return f"TCPIP0::{ip}::5555::SOCKET"
 
 
+def find_usb_resource_string(rm: pyvisa.ResourceManager) -> str:
+    """Find a Rigol USBTMC resource string.
+
+    Honours RIGOL_USB_SERIAL when set to disambiguate between multiple scopes.
+    Raises RuntimeError if no matching Rigol USB device is present.
+    """
+    wanted_serial = os.environ.get("RIGOL_USB_SERIAL", "").strip()
+    all_resources = rm.list_resources()
+    usb_resources = [r for r in all_resources if r.upper().startswith("USB")]
+
+    rigol: list[tuple[str, str]] = []  # (resource_string, serial)
+    for r in usb_resources:
+        # USB resource format varies by backend:
+        #   pyvisa-py : USB[board]::<vid_dec>::<pid_dec>::<serial>::<interface>::INSTR
+        #   NI-VISA   : USB[board]::0x<vid_hex>::0x<pid_hex>::<serial>::INSTR
+        # In both, field 1 is the vendor id and field 3 is the serial.
+        parts = r.split("::")
+        if len(parts) < 5:
+            continue
+        try:
+            # base 0 parses decimal "6833" and "0x1AB1" alike.
+            vid = int(parts[1], 0)
+        except ValueError:
+            continue
+        if vid == _RIGOL_USB_VID:
+            rigol.append((r, parts[3]))
+
+    if wanted_serial:
+        for resource, serial in rigol:
+            if serial == wanted_serial:
+                return resource
+        found = [s for _, s in rigol] or ["none"]
+        raise RuntimeError(
+            f"RIGOL_USB_SERIAL='{wanted_serial}' requested but no matching Rigol USB "
+            f"scope was found. Detected Rigol serials: {found}"
+        )
+
+    if not rigol:
+        detected = ", ".join(usb_resources) if usb_resources else "none"
+        raise RuntimeError(
+            "RIGOL_USB is set but no Rigol USB scope (vendor 0x1AB1) was found. "
+            f"USB resources detected: {detected}"
+        )
+    if len(rigol) > 1:
+        serials = [s for _, s in rigol]
+        raise RuntimeError(
+            f"Multiple Rigol USB scopes found (serials: {serials}). "
+            "Set RIGOL_USB_SERIAL to choose one."
+        )
+    return rigol[0][0]
+
+
+# USB backends tried in priority order. The right one depends on which driver is bound
+# to the scope's USB interface, so we auto-detect rather than assume:
+#   "@py"  -> pyvisa-py + pyusb; works when the interface is bound to WinUSB (e.g. Zadig)
+#   "@ivi" -> NI-VISA / IVI VISA (visa32.dll); works with the native USBTMC driver
+_USB_BACKENDS = ("@py", "@ivi")
+_usb_backend_hint: str | None = None  # last backend that worked; tried first on reconnect
+
+
+def _close_rm(rm: pyvisa.ResourceManager) -> None:
+    try:
+        rm.close()
+    except Exception:
+        pass
+
+
+def _open_usb_scope() -> tuple[pyvisa.ResourceManager, pyvisa.resources.Resource]:
+    """Open the Rigol USB scope, auto-selecting the backend that can see it.
+
+    A scope whose USB interface is bound to WinUSB is reachable via pyvisa-py (@py);
+    a scope on the native USBTMC driver is reachable via an installed NI-VISA backend
+    (@ivi). Each backend only sees devices bound to its kind of driver, so we try them
+    in turn and use the first that finds the scope. Returns (resource_manager, resource).
+    """
+    global _usb_backend_hint
+    # Try the last-known-good backend first, then the rest (dedup, preserve order).
+    order = list(dict.fromkeys(
+        ([_usb_backend_hint] if _usb_backend_hint else []) + list(_USB_BACKENDS)
+    ))
+    problems: list[str] = []
+    for backend in order:
+        try:
+            rm = pyvisa.ResourceManager(backend)
+        except Exception as exc:  # backend or its VISA library is not installed
+            problems.append(f"{backend}: backend unavailable ({type(exc).__name__}: {exc})")
+            continue
+        try:
+            resource = find_usb_resource_string(rm)
+        except RuntimeError as exc:           # backend works but scope not found on it
+            problems.append(f"{backend}: {exc}")
+            _close_rm(rm)
+            continue
+        except Exception as exc:              # enumeration itself failed
+            problems.append(f"{backend}: enumeration failed ({type(exc).__name__}: {exc})")
+            _close_rm(rm)
+            continue
+        scope = rm.open_resource(resource)
+        _usb_backend_hint = backend
+        return rm, scope
+
+    raise RuntimeError(
+        "RIGOL_USB is set but no Rigol USB scope could be opened on any backend:\n  "
+        + "\n  ".join(problems)
+        + "\n\nThe scope's USB interface must be bound to a supported driver:\n"
+        "  - WinUSB (install via Zadig) -> handled by the built-in pyvisa-py backend\n"
+        "  - USBTMC (native driver)     -> requires NI-VISA / IVI VISA (visa32.dll) installed"
+    )
+
+
 def get_scope() -> pyvisa.resources.Resource:
     """Return cached VISA connection, opening it if needed."""
     global _rm, _scope
     if _scope is None:
-        _rm = pyvisa.ResourceManager()
-        _scope = _rm.open_resource(get_resource_string())
-        _scope.timeout = 30_000
+        if usb_in_use():
+            # USB: auto-detect WinUSB (@py) vs the native USBTMC driver (@ivi/NI-VISA).
+            _rm, _scope = _open_usb_scope()
+        else:
+            # LAN: raw socket over the pure-Python backend (no NI-VISA dependency).
+            _rm = pyvisa.ResourceManager("@py")
+            _scope = _rm.open_resource(get_lan_resource_string())
+        _scope.timeout = _USB_TIMEOUT_MS if usb_in_use() else _LAN_TIMEOUT_MS
+        # chunk_size has no measurable effect on USB read reliability here (block reads
+        # use exact byte counts), and a large value keeps the LAN socket fast.
         _scope.chunk_size = 1024 * 1024
         _scope.write_termination = "\n"
         _scope.read_termination = "\n"
-        _scope.clear()  # flush any stale data left in the TCP receive buffer
+        try:
+            _scope.clear()  # flush any stale data left in the receive buffer
+        except pyvisa.errors.VisaIOError:
+            # USBTMC under pyvisa-py does not support the clear operation; the
+            # initial flush is only a best-effort cleanup, so skip it on that backend.
+            pass
     return _scope
 
 
@@ -181,7 +332,14 @@ def single(scope: pyvisa.resources.Resource) -> str:
 
 def autoscale(scope: pyvisa.resources.Resource) -> None:
     """Run the scope's auto-setup (timebase, vertical scale, trigger)."""
-    scope.query(":AUToscale;*OPC?")  # chain OPC? so we block until autoscale completes
+    # Autoscale blocks for several seconds; raise the timeout for this one call so the
+    # shorter USB default doesn't abort the :AUToscale;*OPC? wait, then restore it.
+    prev_timeout = scope.timeout
+    scope.timeout = max(prev_timeout, _SLOW_OP_TIMEOUT_MS)
+    try:
+        scope.query(":AUToscale;*OPC?")  # chain OPC? so we block until autoscale completes
+    finally:
+        scope.timeout = prev_timeout
     if err := check_scpi_error(scope):
         raise RuntimeError(f"SCPI error after :AUToscale: {err}")
 
@@ -356,11 +514,10 @@ def get_waveform(scope: pyvisa.resources.Resource, channel: str) -> dict:
     x_origin = float(pre[5])
     x_ref   = float(pre[6])
 
-    data_str = scope.query(":WAV:DATA?").strip()
-    # Strip SCPI definite-length block header (#NXXXXXXXXX...) if present
-    if data_str.startswith("#"):
-        n_digits = int(data_str[1])
-        data_str = data_str[2 + n_digits:]
+    # Read the definite-length data block (backend-aware: native message read on NI-VISA,
+    # exact byte count on pyvisa-py — see _read_definite_block).
+    scope.write(":WAV:DATA?")
+    data_str = _read_definite_block(scope).decode("ascii")
     voltages = [float(v) for v in data_str.split(",")]
     n = len(voltages)
     times = [x_origin + (i - x_ref) * x_inc for i in range(n)]
@@ -379,6 +536,72 @@ def get_waveform(scope: pyvisa.resources.Resource, channel: str) -> dict:
     }
 
 
+def _read_definite_block(scope: pyvisa.resources.Resource) -> bytes:
+    """Read an IEEE 488.2 definite-length block response (``#N<length><data>\\n``).
+
+    The safe way to read this depends on the backend, so dispatch on it. Issue the query
+    (e.g. ``:WAV:DATA?``) with scope.write() before calling this. Returns the payload.
+
+    NI-VISA (@ivi) frames every USBTMC read as a message transaction terminated by an EOM
+    bit. Reading raw byte counts that don't land on the device's message boundary leaves a
+    transaction half-complete with no abort, which desynchronises and can *wedge the scope*
+    — so on @ivi we read the whole message natively (read_raw) and slice the payload from
+    the parsed header. pyvisa-py (@py, used for WinUSB and LAN sockets) is the opposite:
+    read_raw()/query time out on large blocks there, so read by exact byte count instead.
+    """
+    if active_backend() == "@ivi":
+        return _read_block_via_message(scope)
+    return _read_block_via_bytecount(scope)
+
+
+def _parse_definite_block_header(raw: bytes) -> tuple[int, int]:
+    """Return (data_start_index, data_length) for a ``#N<length>...`` block prefix."""
+    if raw[0:1] != b"#":
+        raise ValueError(f"Expected TMC block header starting with '#', got {raw[:8]!r}")
+    n = int(raw[1:2])
+    data_length = int(raw[2:2 + n])
+    return 2 + n, data_length
+
+
+def _read_block_via_message(scope: pyvisa.resources.Resource) -> bytes:
+    """Read the block using the backend's native message framing (NI-VISA / USBTMC).
+
+    read_raw() reads the complete USBTMC message (it stops on the device's EOM, not on a
+    byte count), so the transaction always completes cleanly. Termination matching is
+    disabled for the read because the binary payload can contain 0x0A bytes.
+    """
+    saved_read_termination = scope.read_termination
+    scope.read_termination = None  # do not stop at a 0x0A inside the block
+    try:
+        raw = scope.read_raw()
+    finally:
+        scope.read_termination = saved_read_termination
+    start, data_length = _parse_definite_block_header(raw)
+    data = raw[start:start + data_length]
+    if len(data) != data_length:
+        raise ValueError(
+            f"Truncated block: header declared {data_length} bytes, received {len(data)}"
+        )
+    return data
+
+
+def _read_block_via_bytecount(scope: pyvisa.resources.Resource) -> bytes:
+    """Read the block by exact byte count (required for the pyvisa-py backend).
+
+    PNG data contains 0x0A bytes and large blocks over pyvisa-py USBTMC time out on
+    termination/EOM-based reads, so read precisely the declared number of bytes.
+    """
+    prefix = scope.read_bytes(2)  # '#' + digit-count byte
+    if prefix[0:1] != b"#":
+        raise ValueError(f"Expected TMC block header starting with '#', got {prefix!r}")
+    n = int(prefix[1:2])
+    data_length = int(scope.read_bytes(n))
+    raw = scope.read_bytes(data_length + 1)  # +1 for the trailing newline
+    if raw[-1:] != b'\n':
+        raise ValueError(f"Expected \\n after definite-length block, got {raw[-1:]!r}")
+    return raw[:-1]
+
+
 def screenshot_png(scope: pyvisa.resources.Resource) -> bytes:
     """Return raw PNG bytes from the scope display.
 
@@ -386,14 +609,4 @@ def screenshot_png(scope: pyvisa.resources.Resource) -> bytes:
     Strips the IEEE 488.2 TMC block header (#NXXXXXXXXX) and trailing \\n.
     """
     scope.write(":DISPlay:DATA? ON,OFF,PNG")
-    # Read the TMC block header: #<n><length_digits><data>
-    # Must read by exact byte count — read_raw() stops at 0x0A which appears in PNG data
-    prefix = scope.read_bytes(2)  # '#' + digit-count byte
-    if prefix[0:1] != b"#":
-        raise ValueError(f"Expected TMC block header starting with '#', got {prefix!r}")
-    n = int(prefix[1:2])
-    data_length = int(scope.read_bytes(n))
-    raw = scope.read_bytes(data_length + 1)
-    if raw[-1:] != b'\n':
-        raise ValueError(f"Expected \\n after PNG block, got {raw[-1:]!r}")
-    return raw[:-1]
+    return _read_definite_block(scope)
