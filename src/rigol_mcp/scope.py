@@ -224,6 +224,23 @@ def get_driver(scope: pyvisa.resources.Resource) -> ScopeDriver:
     return _driver
 
 
+def set_driver_from_idn(idn_str: str) -> ScopeDriver | None:
+    """Set the cached driver from an already-known ``*IDN?`` string.
+
+    Lets callers populate the driver cache without a second device round-trip when
+    they've just queried ``*IDN?`` themselves (the ``idn`` tool, for example).
+    Returns the selected driver, or None if no driver matched.
+    """
+    global _driver
+    try:
+        _driver = driver_for(idn_str)
+    except RuntimeError:
+        # No driver matched — leave _driver as None so a later dialect call surfaces
+        # the same error against a concrete tool invocation.
+        return None
+    return _driver
+
+
 def check_scpi_error(scope: pyvisa.resources.Resource) -> str | None:
     """Drain the SCPI error queue. Returns the first error encountered, None if queue was clear.
 

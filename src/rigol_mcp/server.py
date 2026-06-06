@@ -29,7 +29,8 @@ from rigol_mcp.scope import (
     get_cursor_mode, set_cursor_mode, set_cursor_positions, get_cursor_values,
     send_raw, check_scpi_error,
     run, stop, single, autoscale,
-    idn, connection_info, measure, measure_between, MEASURE_ITEMS, MEASURE_ITEMS_TWO_SOURCE,
+    idn, connection_info, set_driver_from_idn,
+    measure, measure_between, MEASURE_ITEMS, MEASURE_ITEMS_TWO_SOURCE,
     get_scope_state, set_channel, set_timebase, set_trigger, get_waveform,
 )
 
@@ -401,16 +402,24 @@ async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
         ]
 
     if name == "idn":
-        # Always emit the connection diagnostic first — it never depends on the device
-        # responding, so it surfaces config issues (LAN vs USB, wrong IP) that would
-        # otherwise be hidden behind an opaque VI_ERROR_TMO timeout from the *IDN? query.
-        info = connection_info()
-        diag = "\n".join(f"  {k:18s}: {v}" for k, v in info.items())
+        # connection_info reads env vars + module-level state with no device I/O. It's
+        # safe to call after any outcome: on success we show what got selected (driver,
+        # resource, backend), on failure we show what was attempted (transport, env vars).
+        # That way the diagnostic surfaces config issues (LAN vs USB, wrong IP) that
+        # would otherwise be hidden behind an opaque VI_ERROR_TMO timeout.
         try:
             idn_str = await _call(idn)
+            # Populate the driver cache from the IDN we already have, so the diagnostic
+            # below shows which dialect was selected. Avoids a second *IDN? round-trip
+            # that get_driver(scope) would otherwise do on first dialect use.
+            set_driver_from_idn(idn_str)
+            info = connection_info()
+            diag = "\n".join(f"  {k:18s}: {v}" for k, v in info.items())
             return [types.TextContent(type="text",
                 text=f"Connection:\n{diag}\n\nIDN: {idn_str}")]
         except Exception as exc:
+            info = connection_info()
+            diag = "\n".join(f"  {k:18s}: {v}" for k, v in info.items())
             return [types.TextContent(type="text",
                 text=f"Connection:\n{diag}\n\n"
                      f"*IDN? query FAILED: {type(exc).__name__}: {exc}\n\n"

@@ -248,6 +248,30 @@ def test_connection_info_never_raises_on_any_env(monkeypatch):
     sc.connection_info()  # garbled values too — still must not raise
 
 
+def test_set_driver_from_idn_populates_cache():
+    """The idn handler uses this to surface the selected driver without a second *IDN?."""
+    drv = sc.set_driver_from_idn("RIGOL TECHNOLOGIES,DS1054Z,SN,1.0")
+    assert drv is not None and drv.name == "DS1000Z"
+    assert sc._driver is drv  # cached for subsequent dialect calls
+
+
+def test_set_driver_from_idn_returns_none_for_unknown():
+    """Unknown IDN: driver cache stays empty so a later dialect tool raises the real error."""
+    assert sc.set_driver_from_idn("RIGOL TECHNOLOGIES,XYZ9000,SN,1.0") is None
+    assert sc._driver is None
+
+
+def test_connection_info_shows_driver_when_session_open(monkeypatch):
+    """After set_driver_from_idn, connection_info exposes the driver name to the user."""
+    monkeypatch.setenv("RIGOL_IP", "10.0.0.9")
+    fake = FakeScope(resource_name="TCPIP0::10.0.0.9::5555::SOCKET")
+    _patch_rms(monkeypatch, {"@py": FakeResourceManager(scope=fake)})
+    sc.get_scope()
+    sc.set_driver_from_idn("RIGOL TECHNOLOGIES,DS1054Z,SN,1.0")
+    info = sc.connection_info()
+    assert info["driver"] == "DS1000Z"
+
+
 # --------------------------------------------------------------------------- block-read framing
 
 def test_parse_definite_block_header():
