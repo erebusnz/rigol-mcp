@@ -193,6 +193,60 @@ def test_invalidate_scope_closes_and_resets(monkeypatch):
     assert sc._scope is None
 
 
+# --------------------------------------------------------------------------- connection_info
+
+def test_connection_info_lan_unconfigured():
+    """No env vars set: report LAN as the default with the unset markers visible."""
+    info = sc.connection_info()
+    assert info["transport"] == "LAN"
+    assert "unset" in info["RIGOL_USB"]
+    assert "(unset)" in info["RIGOL_IP"]
+    assert "RIGOL_IP not set" in info["lan_target"]
+    assert info["session"] == "not yet opened"
+
+
+def test_connection_info_lan_configured(monkeypatch):
+    monkeypatch.setenv("RIGOL_IP", "192.168.1.47")
+    info = sc.connection_info()
+    assert info["transport"] == "LAN"
+    assert info["RIGOL_IP"] == "192.168.1.47"
+    # The full resource string is exposed so users can spot a wrong IP at a glance.
+    assert info["lan_target"] == "TCPIP0::192.168.1.47::5555::SOCKET"
+
+
+def test_connection_info_usb_configured(monkeypatch):
+    monkeypatch.setenv("RIGOL_USB", "1")
+    monkeypatch.setenv("RIGOL_IP", "192.168.1.47")  # kept but not used
+    info = sc.connection_info()
+    assert info["transport"] == "USB"
+    assert info["RIGOL_USB"] == "1"
+    # RIGOL_IP is still reported even when unused — surprising values stay visible.
+    assert info["RIGOL_IP"] == "192.168.1.47"
+    assert "any Rigol" in info["RIGOL_USB_SERIAL"]
+    assert "lan_target" not in info  # USB mode hides LAN target
+
+
+def test_connection_info_reflects_open_session(monkeypatch):
+    """Once a session is open, the resource string is exposed for debugging."""
+    monkeypatch.setenv("RIGOL_IP", "10.0.0.9")
+    fake = FakeScope(resource_name="TCPIP0::10.0.0.9::5555::SOCKET")
+    _patch_rms(monkeypatch, {"@py": FakeResourceManager(scope=fake)})
+    sc.get_scope()  # populates the cached session
+    info = sc.connection_info()
+    assert info["session"] == "cached/open"
+    assert info["resource"] == "TCPIP0::10.0.0.9::5555::SOCKET"
+
+
+def test_connection_info_never_raises_on_any_env(monkeypatch):
+    """connection_info is the diagnostic of last resort — it must survive any env state."""
+    for var in ("RIGOL_USB", "RIGOL_IP", "RIGOL_USB_SERIAL"):
+        monkeypatch.delenv(var, raising=False)
+    sc.connection_info()  # no env vars at all
+    monkeypatch.setenv("RIGOL_USB", "weird-value")
+    monkeypatch.setenv("RIGOL_IP", "   ")
+    sc.connection_info()  # garbled values too — still must not raise
+
+
 # --------------------------------------------------------------------------- block-read framing
 
 def test_parse_definite_block_header():

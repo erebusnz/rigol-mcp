@@ -349,6 +349,37 @@ def idn(scope: pyvisa.resources.Resource) -> str:
     return scope.query("*IDN?").strip()
 
 
+def connection_info() -> dict:
+    """Report connection configuration and current session state.
+
+    Performs NO device I/O and never raises — safe to call before, during, or after a
+    connection failure. Use to build diagnostic output that surfaces what the server was
+    *trying* to do, separately from whether the device responded. Without this, every
+    failure surfaces as the same opaque ``VI_ERROR_TMO`` regardless of whether the server
+    was configured for LAN-to-an-unreachable-IP or USB-with-a-wedged-endpoint.
+    """
+    rigol_usb    = os.environ.get("RIGOL_USB", "").strip()
+    rigol_ip     = os.environ.get("RIGOL_IP", "").strip()
+    rigol_serial = os.environ.get("RIGOL_USB_SERIAL", "").strip()
+    info: dict = {
+        "transport": "USB" if usb_in_use() else "LAN",
+        "RIGOL_USB": rigol_usb or "(unset → LAN)",
+        "RIGOL_IP":  rigol_ip or "(unset)",
+    }
+    if usb_in_use():
+        info["RIGOL_USB_SERIAL"] = rigol_serial or "(unset → any Rigol scope)"
+        info["backend_hint"]     = _usb_backend_hint or "(none yet — will auto-detect)"
+    else:
+        info["lan_target"] = (f"TCPIP0::{rigol_ip}::5555::SOCKET"
+                              if rigol_ip else "(RIGOL_IP not set)")
+    if _scope is not None:
+        info["session"]  = "cached/open"
+        info["resource"] = getattr(_scope, "resource_name", "?")
+    else:
+        info["session"] = "not yet opened"
+    return info
+
+
 # All measurement items supported by DS1000Z :MEASure:ITEM
 MEASURE_ITEMS = frozenset({
     # Voltage
