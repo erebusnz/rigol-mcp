@@ -580,10 +580,10 @@ def get_waveform(scope: pyvisa.resources.Resource, channel: str) -> dict:
     x_origin = float(pre[5])
     x_ref   = float(pre[6])
 
-    # Read the definite-length data block (backend-aware: native message read on NI-VISA,
-    # exact byte count on pyvisa-py — see _read_definite_block).
-    scope.write(":WAV:DATA?")
-    data_str = _read_definite_block(scope).decode("ascii")
+    # Read the ASCII waveform payload. The framing differs by family (DS1000Z wraps the CSV
+    # in an IEEE 488.2 definite-length block, DHO sends bare CSV) so the read strategy is
+    # delegated to the driver — see ScopeDriver.read_waveform_data.
+    data_str = get_driver(scope).read_waveform_data(scope)
     voltages = [float(v) for v in data_str.split(",")]
     n = len(voltages)
     times = [x_origin + (i - x_ref) * x_inc for i in range(n)]

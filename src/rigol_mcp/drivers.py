@@ -77,6 +77,17 @@ class ScopeDriver:
     def prepare_waveform(self, scope: pyvisa.resources.Resource) -> None:
         """Any setup needed before ``:WAV:PRE?``/``:WAV:DATA?`` (default: nothing)."""
 
+    def read_waveform_data(self, scope: pyvisa.resources.Resource) -> str:
+        """Read ``:WAV:DATA?`` and return the CSV payload as a string (header stripped).
+
+        Implementations differ per family: DS1000Z wraps the ASCII payload in an IEEE
+        488.2 definite-length block (``#N<len><csv>``) which must be read with the
+        backend-aware exact-byte-count reader to avoid hanging USBTMC bulk-IN on
+        pyvisa-py/WinUSB; DHO sends bare CSV with no header and can be read to the
+        newline terminator (safe because ASCII payloads never contain 0x0A).
+        """
+        raise NotImplementedError
+
     # --- cursors ---
     def write_cursor_axis(self, scope: pyvisa.resources.Resource,
                           prefix: str, name: str, value_s: float) -> str:
@@ -129,6 +140,16 @@ class DS1000ZDriver(ScopeDriver):
     def autoscale(self, scope: pyvisa.resources.Resource) -> None:
         scope.query(":AUToscale;*OPC?")  # chain OPC? so the query blocks until complete
 
+    def read_waveform_data(self, scope: pyvisa.resources.Resource) -> str:
+        # DS1000Z wraps the ASCII CSV in an IEEE 488.2 definite-length block. Use the
+        # backend-aware reader: on NI-VISA (@ivi) it reads the full message in one
+        # read_raw, on pyvisa-py (@py, used for WinUSB and LAN) it reads by exact byte
+        # count. A terminator-based read on @py + USBTMC can hang the bulk-IN endpoint
+        # for large blocks and has wedged the scope (observed on DS1054Z / WinUSB).
+        from rigol_mcp.scope import _read_definite_block  # lazy: avoid drivers↔scope cycle
+        scope.write(":WAV:DATA?")
+        return _read_definite_block(scope).decode("ascii")
+
     def write_cursor_axis(self, scope, prefix, name, value_s):
         cmd = f"{prefix}:{name}X {time_to_screen_x(scope, value_s)}"  # seconds -> pixels
         scope.write(cmd)
@@ -177,6 +198,13 @@ class DHODriver(ScopeDriver):
         # 2-point slice unless the range is set. 1000 is the NORM max; the scope clamps.
         scope.write(":WAV:STAR 1")
         scope.write(":WAV:STOP 1000")
+
+    def read_waveform_data(self, scope: pyvisa.resources.Resource) -> str:
+        # DHO returns bare CSV with no IEEE 488.2 block header, unlike DS1000Z. ASCII
+        # waveform data never contains 0x0A, so reading to the newline terminator is
+        # safe on every backend (no bulk-IN-hang risk that the byte-count reader exists
+        # to avoid for binary blocks).
+        return scope.query(":WAV:DATA?").strip()
 
     def write_cursor_axis(self, scope, prefix, name, value_s):
         cmd = f"{prefix}:C{name}X {value_s}"  # :CAX/:CBX take seconds directly

@@ -335,13 +335,14 @@ def test_screenshot_png_message(monkeypatch):
     assert sc.screenshot_png(s) == png
 
 
-def test_get_waveform_parses_block_and_stats():
+def test_get_waveform_parses_ds1000z_response_and_stats():
     # PRE fields: [fmt,type,points,count,x_inc,x_origin,x_ref,...]
     pre = "0,0,5,1,1.000000e-06,-2.000000e-06,0,1,0,0"
-    block = make_block(b"-1.0,0.0,2.5,1.0,-0.5")
+    # DS1000Z wraps the ASCII CSV in an IEEE 488.2 block; read via _read_definite_block
+    # which consumes the read_buffer (matching the byte-count reader's behaviour on @py).
     s = FakeScope(
         responses={":WAV:PRE?": pre, ":CHAN1:SCAL?": "1.000000e+00", ":CHAN1:OFFS?": "0"},
-        read_buffer=block,
+        read_buffer=make_block(b"-1.0,0.0,2.5,1.0,-0.5"),
     )
     out = sc.get_waveform(s, "chan1")
     assert out["channel"] == "CHAN1"
@@ -360,8 +361,10 @@ def test_get_waveform_parses_block_and_stats():
 def test_get_waveform_tolerates_missing_vertical_scale():
     # If the scope doesn't answer :SCAL?/:OFFS?, the fields degrade to None (no crash).
     pre = "0,0,5,1,1.000000e-06,-2.000000e-06,0,1,0,0"
-    block = make_block(b"-1.0,0.0,2.5,1.0,-0.5")
-    s = FakeScope(responses={":WAV:PRE?": pre}, read_buffer=block)
+    s = FakeScope(
+        responses={":WAV:PRE?": pre},
+        read_buffer=make_block(b"-1.0,0.0,2.5,1.0,-0.5"),
+    )
     out = sc.get_waveform(s, "chan1")
     assert out["y_scale_v_per_div"] is None
     assert out["y_offset_v"] is None
@@ -499,12 +502,13 @@ def test_screenshot_png_ds1000z_uses_three_param(monkeypatch):
 
 def test_get_waveform_dho_sets_point_range():
     pre = "0,0,2,1,1.000000e-06,0,0,1,0,0"
-    block = make_block(b"0.1,0.2")
-    s = FakeScope(
-        responses={"*IDN?": _DHO_IDN, ":WAV:PRE?": pre,
-                   ":CHAN1:SCAL?": "0.5", ":CHAN1:OFFS?": "0"},
-        read_buffer=block,
-    )
+    s = FakeScope(responses={
+        "*IDN?":         _DHO_IDN,
+        ":WAV:PRE?":     pre,
+        ":WAV:DATA?":    "0.1,0.2",  # DHO sends bare CSV — no block header
+        ":CHAN1:SCAL?":  "0.5",
+        ":CHAN1:OFFS?":  "0",
+    })
     sc.get_waveform(s, "CHAN1")
     assert ":WAV:STAR 1" in s.written
     assert ":WAV:STOP 1000" in s.written
@@ -518,6 +522,40 @@ def test_get_waveform_ds1000z_omits_point_range():
     )
     sc.get_waveform(s, "CHAN1")
     assert not any(c.startswith(":WAV:STAR") for c in s.written)
+
+
+def test_get_waveform_ds1000z_uses_block_reader():
+    """Regression: DS1000Z must use the backend-aware byte-count reader, not a terminator
+    read. Verifies the driver dispatches to ``_read_definite_block``: the test relies on
+    the fake's ``read_buffer`` path (used by read_bytes / read_raw) rather than the
+    ``:WAV:DATA?`` responses dict (used by scope.query)."""
+    pre = "0,0,3,1,1.000000e-06,0,0,1,0,0"
+    s = FakeScope(
+        responses={":WAV:PRE?": pre, ":CHAN1:SCAL?": "1.0", ":CHAN1:OFFS?": "0"},
+        read_buffer=make_block(b"1.5,-2.5,3.0"),
+    )
+    out = sc.get_waveform(s, "CHAN1")
+    assert out["voltages_v"] == [1.5, -2.5, 3.0]
+    # The driver dispatches via :WAV:DATA?; the response comes back through the byte-count
+    # block reader. Confirm the SCPI write was issued.
+    assert ":WAV:DATA?" in s.written
+
+
+def test_get_waveform_accepts_dho_bare_csv():
+    """Regression: DHO returns ASCII waveforms as bare CSV with no block header. The reader
+    must not insist on a '#' framing — historically it did, which on DHO consumed 2 bytes,
+    raised on the missing header, and left the remaining CSV in the socket buffer for the
+    next command to misread (the cause of the spurious -200 errors)."""
+    pre = "0,0,3,1,1.000000e-06,0,0,1,0,0"
+    s = FakeScope(responses={
+        "*IDN?":         _DHO_IDN,
+        ":WAV:PRE?":     pre,
+        ":WAV:DATA?":    "1.5,-2.5,3.0",  # bare CSV — no block header
+        ":CHAN1:SCAL?":  "1.0",
+        ":CHAN1:OFFS?":  "0",
+    })
+    out = sc.get_waveform(s, "CHAN1")
+    assert out["voltages_v"] == [1.5, -2.5, 3.0]
 
 
 def test_measure_dho_uses_statistic_item():
