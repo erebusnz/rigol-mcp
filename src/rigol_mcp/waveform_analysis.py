@@ -10,6 +10,11 @@ NOISE_FILL_FRACTION = 0.10
 # Between NOISE_FILL_FRACTION and this, the signal is real but small relative to full
 # scale (so noisy and imprecise): still analysed, but flagged with a low-amplitude warning.
 LOW_FILL_FRACTION = 0.20
+# Fraction of the half-amplitude the signal must travel past the mean before a mean-crossing
+# is committed (a Schmitt-trigger band, the analogue of the scope's own trigger hysteresis).
+# Without it, a noisy trace wobbles across the mean several times at each true crossing and
+# the crossing count — and therefore the frequency — is inflated by an integer-ish factor.
+CROSSING_HYSTERESIS = 0.25
 
 
 def _fmt_si(value: float, unit: str) -> str:
@@ -21,6 +26,33 @@ def _fmt_si(value: float, unit: str) -> str:
         if abs_v >= threshold:
             return f"{value / threshold:.4g} {prefix}{unit}"
     return f"{value:.4g} {unit}"
+
+
+def _hysteretic_crossings(v_c: list, times: list, n: int, hyst: float) -> list:
+    """Mean-crossing instants detected with Schmitt-trigger hysteresis.
+
+    A bare sign-change test (``v_c[i-1] * v_c[i] <= 0``) counts every wobble of a noisy
+    signal across the mean, inflating the crossing count and hence the frequency. Here a
+    crossing is only committed once the signal has travelled beyond ``±hyst`` of the mean,
+    so noise wobble within the band is ignored. Returns interpolated true zero-crossing
+    times, suitable for period estimation."""
+    crossings = []
+    state = 0        # +1 once above +hyst, -1 once below -hyst, 0 until the first commit
+    pending = None   # latest raw mean-crossing time, awaiting confirmation by an extreme
+    for i in range(1, n):
+        if v_c[i - 1] * v_c[i] <= 0 and v_c[i] != v_c[i - 1]:
+            pending = times[i - 1] + (times[i] - times[i - 1]) * (-v_c[i - 1]) / (v_c[i] - v_c[i - 1])
+        if v_c[i] > hyst:
+            if state == -1 and pending is not None:
+                crossings.append(pending)
+                pending = None
+            state = 1
+        elif v_c[i] < -hyst:
+            if state == 1 and pending is not None:
+                crossings.append(pending)
+                pending = None
+            state = -1
+    return crossings
 
 
 def describe_waveform(data: dict) -> str:
@@ -82,13 +114,11 @@ def describe_waveform(data: dict) -> str:
         )
         return "\n".join(lines)
 
-    # --- Zero crossings relative to mean (handles DC offset) ---
+    # --- Zero crossings relative to mean (handles DC offset), with hysteresis so noise
+    # wobble near the mean does not spawn spurious crossings and inflate the frequency. ---
     v_c = [v - vmean for v in voltages]
-    crossings = []
-    for i in range(1, n):
-        if v_c[i - 1] * v_c[i] <= 0 and v_c[i] != v_c[i - 1]:
-            t_x = times[i - 1] + (times[i] - times[i - 1]) * (-v_c[i - 1]) / (v_c[i] - v_c[i - 1])
-            crossings.append(t_x)
+    hyst = (vpp / 2) * CROSSING_HYSTERESIS
+    crossings = _hysteretic_crossings(v_c, times, n, hyst)
 
     # --- Pulse / square wave detection (bimodal: most points near rails) ---
     rail_thr = vpp * 0.15
@@ -169,14 +199,32 @@ def describe_waveform(data: dict) -> str:
             "usable but noisy — reduce V/div so the signal fills more of the screen for a cleaner measurement."
         )
 
-    # Clipping: many points within 2% of Vmin or Vmax rail
-    clip_thr = max(vpp * 0.02, 1e-3)
-    n_clip = sum(1 for v in voltages if abs(v - vmax) < clip_thr or abs(v - vmin) < clip_thr)
-    if n_clip / n > 0.03 and not is_pulse:
-        warnings.append(
-            f"Possible clipping: {n_clip/n*100:.0f}% of points at voltage rail. "
-            "Increase V/div or reduce probe attenuation."
-        )
+    # Clipping: a genuinely clipped signal has a FLAT top/bottom — a run of consecutive
+    # samples pinned at (nearly) the same extreme voltage. Proximity to a rail alone is not
+    # enough: a clean sine dwells near its peaks by curvature (~15% of its samples land within
+    # 2% of a rail) without ever going flat, so a near-rail count fires on every clean sine.
+    # Look for flat runs instead, where successive samples barely change near the extreme.
+    flat_eps  = max(vpp * 0.001, 1e-4)   # max adjacent-sample change within a "flat" run
+    rail_band = max(vpp * 0.03, 1e-3)    # how close to the rail the run must sit
+    min_run   = max(int(n * 0.01), 8)    # min consecutive flat samples to call it clipping
+
+    def _max_flat_run(target):
+        best = run = 0
+        for i in range(n):
+            if abs(voltages[i] - target) < rail_band:
+                run = run + 1 if (run and abs(voltages[i] - voltages[i - 1]) < flat_eps) else 1
+                best = max(best, run)
+            else:
+                run = 0
+        return best
+
+    if not is_pulse and vpp > 1e-3:
+        flat_run = max(_max_flat_run(vmax), _max_flat_run(vmin))
+        if flat_run >= min_run:
+            warnings.append(
+                f"Possible clipping: flat run of {flat_run} samples pinned at the voltage rail. "
+                "Increase V/div or reduce probe attenuation."
+            )
 
     # Period jitter: high CV on half-period spacings, computed only over crossings where
     # the local signal amplitude is significant (filters out noise-floor crossings in damped signals)
@@ -218,19 +266,23 @@ def describe_waveform(data: dict) -> str:
                     "Widen timebase or move trigger point later."
                 )
 
-    # DC baseline wander: mean of first 10% vs last 10% differs, but only when both ends
-    # have meaningful signal amplitude (suppresses false positives from damped signals)
-    tenth = max(n // 10, 1)
-    mean_head = sum(voltages[:tenth]) / tenth
-    mean_tail = sum(voltages[-tenth:]) / tenth
-    head_ac = max(abs(v - mean_head) for v in voltages[:tenth])
-    tail_ac = max(abs(v - mean_tail) for v in voltages[-tenth:])
-    if (abs(mean_tail - mean_head) > vpp * 0.15 and vpp > 1e-3
-            and head_ac > vpp * 0.10 and tail_ac > vpp * 0.10):
-        warnings.append(
-            f"DC baseline shifts {_fmt_si(mean_tail - mean_head, 'V')} from start to end — "
-            "capture may span a transient or settling event."
-        )
+    # DC baseline wander: compare head vs tail means, but average each over an integer number
+    # of detected cycles rather than a fixed 10% slice. A periodic capture that simply spans a
+    # non-integer number of cycles has head/tail slices that differ purely from partial-cycle
+    # averaging (e.g. a window starting near +peak and ending near −peak) — that is not a
+    # baseline shift. Averaging whole cycles cancels the AC content so each window reflects the
+    # true local DC. Needs a trustworthy period (post-hysteresis) and at least ~3 cycles.
+    if period_est and period_est > 0 and x_inc > 0:
+        cyc_samples = int(round(period_est / x_inc))
+        num_cycles = window_s / period_est
+        if cyc_samples >= 4 and num_cycles >= 3 and 2 * cyc_samples <= n:
+            mean_head = sum(voltages[:cyc_samples]) / cyc_samples
+            mean_tail = sum(voltages[-cyc_samples:]) / cyc_samples
+            if abs(mean_tail - mean_head) > vpp * 0.15 and vpp > 1e-3:
+                warnings.append(
+                    f"DC baseline shifts {_fmt_si(mean_tail - mean_head, 'V')} from start to end — "
+                    "capture may span a transient or settling event."
+                )
 
     if len(crossings) < 4:
         warnings.append(

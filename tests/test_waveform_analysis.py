@@ -1,8 +1,13 @@
 """Unit tests for rigol_mcp.waveform_analysis — pure deterministic heuristics."""
 
+import json
 import math
+import random
+from pathlib import Path
 
 import pytest
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 from rigol_mcp.waveform_analysis import _fmt_si, describe_waveform
 
@@ -149,3 +154,92 @@ def test_noise_floor_check_skipped_without_scale():
     text = describe_waveform(data)
     assert "likely noise" not in text
     assert "oscillation" in text
+
+
+# --------------------------------------------------------------------------- regression: issue #2
+# Noise-robust frequency, flat-run clipping, and integer-cycle baseline checks.
+# See get_waveform_issue.md for the hardware captures these reproduce.
+
+def _freq_hz(text):
+    """Extract the analyzer's reported frequency in Hz from the 'Freq :' line."""
+    for line in text.splitlines():
+        if line.strip().startswith("Freq"):
+            # e.g. "Freq   : ~5 kHz  (period ...)" or "~971 Hz"
+            tok = line.split("~", 1)[1].split("(", 1)[0].strip()  # "5 kHz"
+            val, unit = tok.split()
+            scale = {"Hz": 1, "kHz": 1e3, "MHz": 1e6}[unit]
+            return float(val) * scale
+    return None
+
+
+def test_noisy_sine_non_integer_cycles_reports_true_frequency():
+    # 971 Hz sine, ~4 Vpp, Gaussian noise ~4% Vpp, 6 ms window (~5.8 cycles).
+    # Pre-fix the wobble across the mean inflated the count ~4x (-> ~4.3 kHz reported).
+    # Expect: frequency within +/-10% of 971 Hz, and no clipping/baseline false positives.
+    rng = random.Random(1)
+    n, x_inc, f0, amp = 1200, 5e-6, 971.0, 2.0
+    volts = [amp * math.sin(2 * math.pi * f0 * i * x_inc) + rng.gauss(0, 0.16) for i in range(n)]
+    data = _make_capture(volts, x_inc=x_inc)
+    data["y_scale_v_per_div"] = 1.0  # 8 V full screen -> 50% fill, comfortably real
+    text = describe_waveform(data)
+
+    freq = _freq_hz(text)
+    assert freq is not None
+    assert abs(freq - f0) / f0 < 0.10, f"reported {freq} Hz, expected ~{f0} Hz\n{text}"
+    assert "clipping" not in text
+    assert "DC baseline shifts" not in text
+
+
+def test_clean_sine_does_not_report_clipping():
+    # A clean (noiseless) sine dwells near its peaks but is not clipped.
+    data = _make_capture(_sine(n=1000, cycles=5, amp=1.0), x_inc=1e-6)
+    text = describe_waveform(data)
+    assert "clipping" not in text
+
+
+def test_genuinely_clipped_sine_flagged():
+    # Sine driven past the rails so it flat-tops at +/-2 V -> real clipping.
+    n = 1000
+    volts = [max(-2.0, min(2.0, 3.0 * math.sin(2 * math.pi * 5 * i / n))) for i in range(n)]
+    text = describe_waveform(_make_capture(volts, x_inc=1e-6))
+    assert "clipping" in text
+
+
+def test_non_integer_cycle_sine_no_baseline_warning():
+    # A sine spanning a non-integer number of cycles (starts near +peak, ends near -peak):
+    # head/tail 10% slices differ a lot, but it is NOT a baseline shift.
+    n = 1000
+    volts = [2.0 * math.sin(2 * math.pi * 5.7 * i / n + 1.4) for i in range(n)]
+    text = describe_waveform(_make_capture(volts, x_inc=1e-6))
+    assert "DC baseline shifts" not in text
+
+
+def test_true_baseline_drift_flagged():
+    # Sine on a slow linear ramp of the mean -> a real baseline shift.
+    n = 1000
+    volts = [math.sin(2 * math.pi * 5 * i / n) + (-0.6 + 1.2 * i / n) for i in range(n)]
+    text = describe_waveform(_make_capture(volts, x_inc=1e-6))
+    assert "DC baseline shifts" in text
+
+
+# --------------------------------------------------------------------------- hardware fixture
+# A real DS1104Z capture of a fuzzy ~1 kHz sine (see fixtures/ds1104z_1khz_2vpp.json).
+# Pre-fix, the bare mean-crossing detector counted 35 crossings on this trace and reported
+# ~2.8 kHz, and the near-rail proximity metric (11.4%) raised a false clipping warning.
+
+def _load_fixture(name):
+    d = json.loads((FIXTURES / name).read_text())
+    xinc, t0, n = d["time_increment_s"], d["time_start_s"], len(d["voltages_v"])
+    d["times_s"] = [t0 + i * xinc for i in range(n)]  # reconstruct (not stored, deterministic)
+    return d
+
+
+def test_hardware_1khz_sine_frequency_matches_scope():
+    data = _load_fixture("ds1104z_1khz_2vpp.json")
+    text = describe_waveform(data)
+    f_true = data["hw_frequency_hz"]               # scope's hardware counter: 990 Hz
+    freq = _freq_hz(text)
+    assert freq is not None, text
+    assert abs(freq - f_true) / f_true < 0.10, f"reported {freq} Hz vs scope {f_true} Hz\n{text}"
+    assert "clipping" not in text                  # a fuzzy sine is not clipped
+    assert "DC baseline shifts" not in text
