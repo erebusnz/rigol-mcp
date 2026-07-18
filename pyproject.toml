@@ -11,8 +11,18 @@ dependencies = [
     "mcp[cli]>=1.0.0",
     "pyvisa>=1.14.0",
     "pyvisa-py>=0.7.0",
-    "pyusb>=1.2.0",          # USBTMC transport for pyvisa-py
-    "libusb-package>=1.0.26.0",  # bundled libusb backend (so USB works without a separate install)
+    "pyusb>=1.2.0",          # USBTMC transport for pyvisa-py (pure-Python; installs anywhere)
+    # Bundled libusb backend, so USB works without a separate libusb install. It ships
+    # CPython-version-specific wheels (e.g. cp313) and has none for 3.14 yet, so the marker
+    # omits it there: the install still succeeds and LAN works; USB degrades with a clear
+    # message.
+    # The per-CPython-version wheels are an upstream limitation, tracked at
+    # https://github.com/pyocd/libusb-package/issues/18 (abi3/generic wheels would remove
+    # the need for this marker entirely).
+    # TODO: once a cp314 wheel is published (watch https://github.com/pyocd/libusb-package/releases),
+    # bump the version floor and raise or remove the `python_version < '3.14'` bound so USB
+    # is default on 3.14 too.
+    "libusb-package>=1.0.26.0; python_version < '3.14'",
     "python-dotenv>=1.0.0",  # load configuration from a local .env file
 ]
 

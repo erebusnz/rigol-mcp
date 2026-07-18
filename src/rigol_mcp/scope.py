@@ -21,6 +21,30 @@ from rigol_mcp.drivers import (
 # Rigol Technologies USB vendor ID — used to identify the scope among USB devices.
 _RIGOL_USB_VID = 0x1AB1
 
+
+def _prefer_bundled_libusb1() -> None:
+    """Force pyusb (used by the pyvisa-py @py backend) onto the libusb-1.0 backend
+    bundled with ``libusb-package``.
+
+    Without this, pyusb's auto-detection can latch onto a stray system ``libusb0``
+    backend that enumerates zero devices. Because that path returns empty *without*
+    raising ``NoBackendError``, pyvisa-py never triggers its own libusb-package
+    fallback, so a perfectly reachable WinUSB-bound scope shows up nowhere. Making
+    ``usb.backend.libusb1.get_backend`` return the bundled backend puts the working
+    libusb1 first in pyusb's search order. No-op if the pieces aren't importable.
+    """
+    try:
+        import usb.backend.libusb1 as _libusb1
+        import libusb_package
+    except Exception:
+        return
+    backend = libusb_package.get_libusb1_backend()
+    if backend is not None:
+        _libusb1.get_backend = lambda *a, **k: backend
+
+
+_prefer_bundled_libusb1()
+
 # Per-transport default I/O timeout (ms). USB uses a shorter timeout so the rare USBTMC
 # read that hangs recovers quickly: pyvisa-py sends the USBTMC Bulk-IN abort on read
 # failure (pyvisa-py PR #179) and our caller reconnects, so a stuck read costs ~10 s
@@ -166,7 +190,10 @@ def _open_usb_scope() -> tuple[pyvisa.ResourceManager, pyvisa.resources.Resource
         + "\n  ".join(problems)
         + "\n\nThe scope's USB interface must be bound to a supported driver:\n"
         "  - WinUSB (install via Zadig) -> handled by the built-in pyvisa-py backend\n"
-        "  - USBTMC (native driver)     -> requires NI-VISA / IVI VISA (visa32.dll) installed"
+        "  - USBTMC (native driver)     -> requires NI-VISA / IVI VISA (visa32.dll) installed\n"
+        "\nIf the @py backend reports the USB backend is unavailable, libusb may be missing\n"
+        "for this interpreter: libusb-package has no wheel for every Python (e.g. 3.14), so\n"
+        "run on a Python it ships wheels for, or use the native USBTMC driver via NI-VISA."
     )
 
 

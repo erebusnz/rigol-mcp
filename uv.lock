@@ -706,7 +706,7 @@ name = "rigol-mcp"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "libusb-package" },
+    { name = "libusb-package", marker = "python_full_version < '3.14'" },
     { name = "mcp", extra = ["cli"] },
     { name = "python-dotenv" },
     { name = "pyusb" },
@@ -722,7 +722,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "libusb-package", specifier = ">=1.0.26.0" },
+    { name = "libusb-package", marker = "python_full_version < '3.14'", specifier = ">=1.0.26.0" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.0.0" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.23" },
