@@ -34,7 +34,21 @@ from rigol_mcp.scope import (
     get_scope_state, set_channel, set_timebase, set_trigger, get_waveform,
 )
 
-server = Server("rigol-mcp")
+server = Server(
+    "rigol-mcp",
+    instructions=(
+        "Rigol oscilloscope control over SCPI.\n"
+        "- Read the scope with the data tools first: measure/measure_between for numeric "
+        "readings, get_waveform for trace shape/frequency/amplitude analysis, "
+        "get_scope_state for configuration. They return compact structured text that is "
+        "far cheaper and easier to reason over than an image.\n"
+        "- screenshot is a fallback for genuinely visual checks only (on-screen menus, "
+        "cursor placement, confirming what a human sees) — do not use it as the default "
+        "way to inspect signals.\n"
+        "- Call tools strictly sequentially, never concurrently: all commands share one "
+        "instrument connection."
+    ),
+)
 
 # Serialises all VISA operations — the underlying TCP socket is not thread/async safe.
 _scope_lock = asyncio.Lock()
@@ -91,6 +105,12 @@ async def list_tools() -> list[types.Tool]:
             description=(
                 "Capture a screenshot of the oscilloscope display. "
                 "Returns the image and the absolute path where the PNG was saved. "
+                "This is a fallback, not the primary way to read the scope: for numeric "
+                "readings use measure/measure_between and for trace data use get_waveform — "
+                "they return compact structured text that is faster and cheaper to reason "
+                "over than an image. Reach for screenshot only when a genuinely visual check "
+                "is needed (on-screen menus/UI state, cursor placement, display rendering, "
+                "or confirming what a human sees). "
                 "Do not call concurrently with any other rigol tool."
             ),
             inputSchema={"type": "object", "properties": {}, "required": []},
@@ -191,6 +211,8 @@ async def list_tools() -> list[types.Tool]:
             name="measure",
             description=(
                 "Query a single-source built-in measurement on a channel. "
+                "Preferred over screenshot for reading values — numeric results are "
+                "cheaper and easier to analyse than an image. "
                 "For stable readings: on DS1000Z, stop acquisition first. "
                 "On DHO, keep acquisition running — the DHO measurement engine only populates "
                 "item values from live acquisitions; some items (VMAX/VMIN/VTOP/FREQUENCY/…) "
@@ -261,6 +283,8 @@ async def list_tools() -> list[types.Tool]:
             name="get_waveform",
             description=(
                 "Download and analyse the current waveform for a channel (NORM screen buffer, up to ~1000–1200 points depending on scope). "
+                "Preferred over screenshot for inspecting the trace — the text analysis is "
+                "cheaper and easier to reason over than an image. "
                 "Stop or single-trigger the scope first for consistent data. "
                 "By default returns a plain-text analysis: signal shape, frequency/period, amplitude, "
                 "DC offset, cycle count, and data-quality warnings (e.g. mid-cycle edges, invalid frequency). "
