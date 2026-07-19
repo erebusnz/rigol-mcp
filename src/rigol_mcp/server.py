@@ -211,7 +211,9 @@ async def list_tools() -> list[types.Tool]:
                 "PPULSES, NPULSES, PEDGES, NEDGES. "
                 "A return value of 9.9E37 is the scope's invalid/overflow sentinel — "
                 "it means the measurement could not be computed (e.g. FREQUENCY returns 9.9E37 "
-                "when the timebase is too narrow to show a complete cycle; widen scale and retry). "
+                "when the timebase is too narrow to show a complete cycle; widen scale and retry); "
+                "such values come back annotated as invalid/overflow. "
+                "If the channel's display is OFF it is auto-enabled first (noted in the result). "
                 "For delay or phase between two channels use measure_between. "
                 "Do not call concurrently with any other rigol tool."
             ),
@@ -237,6 +239,8 @@ async def list_tools() -> list[types.Tool]:
                 "(RDELAY→RRDELAY, FDELAY→FFDELAY, RPHASE→RRPHASE, FPHASE→FFPHASE). "
                 "For stable readings: on DS1000Z, stop acquisition first. "
                 "On DHO, keep acquisition running (see `measure` for details). "
+                "A 9.9E37 result is the scope's invalid/overflow sentinel and comes back annotated; "
+                "any source channel whose display is OFF is auto-enabled first (noted in the result). "
                 "Do not call concurrently with any other rigol tool."
             ),
             inputSchema={
@@ -264,6 +268,7 @@ async def list_tools() -> list[types.Tool]:
                 "screen is flagged as noise floor and its shape/frequency are not reported, and one filling "
                 "under ~20% gets a low-amplitude warning (reduce V/div and re-capture for a clean signal). "
                 "Set raw_data=true to get the full time/voltage JSON arrays instead. "
+                "If the channel's display is OFF it is auto-enabled first (flagged in the warnings). "
                 "After reading, act on any warnings — if FREQUENCY would be 9.9E37 widen the timebase; "
                 "if edges are not near the DC mean, adjust offset so right edge = N×(period/2) − 6×scale. "
                 "Do not call concurrently with any other rigol tool."

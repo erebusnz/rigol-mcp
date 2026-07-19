@@ -6,6 +6,8 @@ the active :class:`~rigol_mcp.drivers.ScopeDriver`, selected once per connection
 """
 
 import os
+import time
+
 import pyvisa
 
 from rigol_mcp.drivers import (
@@ -461,8 +463,12 @@ def measure(scope: pyvisa.resources.Resource, channel: str, item: str) -> str:
         raise ValueError(f"'{item}' requires two sources — use measure_between()")
     if it not in MEASURE_ITEMS:
         raise ValueError(f"Unknown item '{item}'. Valid: {sorted(MEASURE_ITEMS)}")
+    note = ensure_channel_displayed(scope, ch)
     get_driver(scope).register_measure_item(scope, it, ch)
-    return scope.query(f":MEASure:ITEM? {it},{ch}").strip()
+    value = annotate_measurement_value(scope.query(f":MEASure:ITEM? {it},{ch}").strip())
+    if note:
+        value += f"\n⚠ {note}"
+    return value
 
 
 def measure_between(
@@ -484,8 +490,62 @@ def measure_between(
     it = driver.resolve_two_source_item(item)
     s1 = source1.upper()
     s2 = source2.upper()
+    notes = [n for src in (s1, s2) if (n := ensure_channel_displayed(scope, src))]
     driver.register_measure_item(scope, it, s1, s2)
-    return scope.query(f":MEASure:ITEM? {it},{s1},{s2}").strip()
+    value = annotate_measurement_value(scope.query(f":MEASure:ITEM? {it},{s1},{s2}").strip())
+    for note in notes:
+        value += f"\n⚠ {note}"
+    return value
+
+
+# How long get_waveform keeps polling for a non-empty payload before reporting that the
+# channel has no data. Covers a few sweeps at moderate timebases; very slow timebases
+# (>~500 ms/div) may still need a manual re-capture after the first sweep completes.
+_WAVEFORM_DATA_RETRY_S = 6.0
+
+# Rigol scopes return ±9.9E37 when a measurement cannot be made (overflow, no signal,
+# or — indistinguishably — the source channel being disabled). Anything at or beyond
+# this magnitude is the sentinel, never a real reading.
+_INVALID_SENTINEL = 9.0e37
+
+
+def ensure_channel_displayed(scope: pyvisa.resources.Resource, channel: str) -> str | None:
+    """Enable a CHANn source's display if it is OFF, so measurements don't silently
+    return the 9.9E37 invalid sentinel.
+
+    Returns a note string when the channel had to be enabled (for surfacing in the
+    tool result), None if it was already on. Non-CHAN sources (MATH, digital) use
+    different display SCPI, so they are left untouched.
+    """
+    ch = channel.upper()
+    if not ch.startswith("CHAN"):
+        return None
+    if scope.query(f":{ch}:DISP?").strip() not in ("0", "OFF"):
+        return None
+    scope.write(f":{ch}:DISP ON")
+    if err := check_scpi_error(scope):
+        raise RuntimeError(f"SCPI error enabling {ch} display: {err}")
+    # Let at least one acquisition complete before measuring; a just-enabled channel
+    # has no data yet and would still return the invalid sentinel.
+    time.sleep(0.5)
+    return (
+        f"{ch} display was OFF — auto-enabled it. If the value looks invalid, the scope "
+        "may need more time to acquire (slow timebase); re-run the measurement."
+    )
+
+
+def annotate_measurement_value(value: str) -> str:
+    """Append an explanation when the scope returned its invalid/overflow sentinel."""
+    try:
+        f = float(value)
+    except ValueError:
+        return value
+    if abs(f) >= _INVALID_SENTINEL:
+        return (
+            f"{value} (scope invalid/overflow sentinel — measurement could not be made; "
+            "check timebase, V/div, trigger, and that the signal is on screen)"
+        )
+    return value
 
 
 def get_scope_state(scope: pyvisa.resources.Resource) -> dict:
@@ -596,6 +656,9 @@ def get_waveform(scope: pyvisa.resources.Resource, channel: str) -> dict:
     Stop or single-trigger the scope first for consistent data.
     """
     ch = channel.upper()
+    warnings = []
+    if note := ensure_channel_displayed(scope, ch):
+        warnings.append(note)
     scope.write(f":WAV:SOUR {ch}")
     scope.write(":WAV:MODE NORM")
     scope.write(":WAV:FORM ASC")
@@ -611,7 +674,29 @@ def get_waveform(scope: pyvisa.resources.Resource, channel: str) -> dict:
     # in an IEEE 488.2 definite-length block, DHO sends bare CSV) so the read strategy is
     # delegated to the driver — see ScopeDriver.read_waveform_data.
     data_str = get_driver(scope).read_waveform_data(scope)
-    voltages = [float(v) for v in data_str.split(",")]
+    voltages = [float(v) for v in data_str.split(",") if v.strip()]
+    # A just-enabled channel serves an empty payload until a full sweep lands (~2 s after
+    # DISP ON at 50 ms/div on a DS1104Z), so poll briefly before giving up.
+    deadline = time.monotonic() + _WAVEFORM_DATA_RETRY_S
+    while not voltages and time.monotonic() < deadline:
+        time.sleep(1.0)
+        data_str = get_driver(scope).read_waveform_data(scope)
+        voltages = [float(v) for v in data_str.split(",") if v.strip()]
+    if not voltages:
+        reason = (
+            f"{ch} returned no waveform data — the channel has not acquired anything yet. "
+            "Ensure acquisition is running (run tool, or single/autoscale) and re-capture."
+        )
+        if warnings:
+            reason += f" Note: {warnings[0]}"
+        raise RuntimeError(reason)
+    if x_inc == 0:
+        # The preamble was read before the first sweep on a just-enabled channel completed —
+        # the scope reports 0 s/point until then. Refresh it now that data exists.
+        pre = scope.query(":WAV:PRE?").strip().split(",")
+        x_inc    = float(pre[4])
+        x_origin = float(pre[5])
+        x_ref    = float(pre[6])
     n = len(voltages)
     times = [x_origin + (i - x_ref) * x_inc for i in range(n)]
 
@@ -627,6 +712,13 @@ def get_waveform(scope: pyvisa.resources.Resource, channel: str) -> dict:
     except Exception:
         y_offset = None
 
+    if any(abs(v) >= _INVALID_SENTINEL for v in voltages):
+        warnings.append(
+            "Waveform contains 9.9E37 invalid-sentinel samples — the scope had no valid "
+            "data for this channel; min/max/mean statistics are unreliable. Re-capture "
+            "after the channel has acquired data."
+        )
+
     return {
         "channel":        ch,
         "points":         n,
@@ -640,6 +732,7 @@ def get_waveform(scope: pyvisa.resources.Resource, channel: str) -> dict:
         "y_offset_v":     y_offset,
         "times_s":        times,
         "voltages_v":     voltages,
+        "warnings":       warnings,
     }
 
 

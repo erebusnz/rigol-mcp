@@ -106,6 +106,26 @@ def test_warns_on_mid_cycle_edges():
     assert "mid-cycle" in text
 
 
+def test_upstream_capture_warnings_surface():
+    # Warnings attached to the capture dict (e.g. channel was auto-enabled) must appear
+    # in the analysis warnings block.
+    data = _make_capture(_sine())
+    data["warnings"] = ["CHAN1 display was OFF — auto-enabled it."]
+    text = describe_waveform(data)
+    assert "⚠ CHAN1 display was OFF" in text
+
+
+def test_upstream_warnings_survive_noise_floor_early_return():
+    # The noise-floor guard returns early with its own warnings block — upstream capture
+    # warnings must not be dropped on that path.
+    data = _make_capture(_sine(n=1000, cycles=50, amp=0.16), x_inc=2e-6)
+    data["y_scale_v_per_div"] = 1.25
+    data["warnings"] = ["upstream capture note"]
+    text = describe_waveform(data)
+    assert "likely noise" in text
+    assert "⚠ upstream capture note" in text
+
+
 def test_output_is_multiline_string():
     text = describe_waveform(_make_capture(_sine()))
     assert isinstance(text, str)

@@ -341,7 +341,8 @@ def test_get_waveform_parses_ds1000z_response_and_stats():
     # DS1000Z wraps the ASCII CSV in an IEEE 488.2 block; read via _read_definite_block
     # which consumes the read_buffer (matching the byte-count reader's behaviour on @py).
     s = FakeScope(
-        responses={":WAV:PRE?": pre, ":CHAN1:SCAL?": "1.000000e+00", ":CHAN1:OFFS?": "0"},
+        responses={":WAV:PRE?": pre, ":CHAN1:DISP?": "1",
+                   ":CHAN1:SCAL?": "1.000000e+00", ":CHAN1:OFFS?": "0"},
         read_buffer=make_block(b"-1.0,0.0,2.5,1.0,-0.5"),
     )
     out = sc.get_waveform(s, "chan1")
@@ -362,7 +363,7 @@ def test_get_waveform_tolerates_missing_vertical_scale():
     # If the scope doesn't answer :SCAL?/:OFFS?, the fields degrade to None (no crash).
     pre = "0,0,5,1,1.000000e-06,-2.000000e-06,0,1,0,0"
     s = FakeScope(
-        responses={":WAV:PRE?": pre},
+        responses={":WAV:PRE?": pre, ":CHAN1:DISP?": "1"},
         read_buffer=make_block(b"-1.0,0.0,2.5,1.0,-0.5"),
     )
     out = sc.get_waveform(s, "chan1")
@@ -403,7 +404,7 @@ def test_check_scpi_error(resp, expected):
 # --------------------------------------------------------------------------- measure validation
 
 def test_measure_valid():
-    s = FakeScope(responses={":MEASure:ITEM?": "1.234000e+00"})
+    s = FakeScope(responses={":MEASure:ITEM?": "1.234000e+00", ":CHAN1:DISP?": "1"})
     assert sc.measure(s, "chan1", "vpp") == "1.234000e+00"
     assert ":MEASure:ITEM VPP,CHAN1" in s.written
 
@@ -424,6 +425,123 @@ def test_measure_between_rejects_single_source_item():
     s = FakeScope()
     with pytest.raises(ValueError, match="not a valid two-source item"):
         sc.measure_between(s, "CHAN1", "CHAN2", "VPP")
+
+
+# ----------------------------------------------- disabled-channel auto-enable & 9.9E37 sentinel
+
+def test_measure_auto_enables_disabled_channel(monkeypatch):
+    monkeypatch.setattr(sc.time, "sleep", lambda _: None)
+    s = FakeScope(responses={":CHAN2:DISP?": "0", ":SYSTem:ERRor?": "0",
+                             ":MEASure:ITEM?": "1.000000e+00"})
+    out = sc.measure(s, "CHAN2", "VAVG")
+    assert ":CHAN2:DISP ON" in s.written
+    assert out.startswith("1.000000e+00")
+    assert "CHAN2 display was OFF" in out
+    assert "auto-enabled" in out
+
+
+def test_measure_enabled_channel_not_toggled():
+    s = FakeScope(responses={":CHAN1:DISP?": "1", ":MEASure:ITEM?": "1.234000e+00"})
+    out = sc.measure(s, "CHAN1", "VPP")
+    assert out == "1.234000e+00"
+    assert not any("DISP ON" in c for c in s.written)
+
+
+def test_measure_annotates_invalid_sentinel():
+    s = FakeScope(responses={":CHAN1:DISP?": "1", ":MEASure:ITEM?": "9.900000e+37"})
+    out = sc.measure(s, "CHAN1", "FREQUENCY")
+    assert out.startswith("9.900000e+37")
+    assert "invalid/overflow sentinel" in out
+    assert "auto-enabled" not in out
+
+
+def test_measure_auto_enable_scpi_error_raises(monkeypatch):
+    monkeypatch.setattr(sc.time, "sleep", lambda _: None)
+    s = FakeScope(responses={":CHAN2:DISP?": "0",
+                             ":SYSTem:ERRor?": '-113,"Undefined header"'})
+    with pytest.raises(RuntimeError, match="enabling CHAN2 display"):
+        sc.measure(s, "CHAN2", "VAVG")
+
+
+def test_measure_between_enables_only_disabled_source(monkeypatch):
+    monkeypatch.setattr(sc.time, "sleep", lambda _: None)
+    s = FakeScope(responses={":CHAN1:DISP?": "1", ":CHAN2:DISP?": "0",
+                             ":SYSTem:ERRor?": "0", ":MEASure:ITEM?": "1.0e-06"})
+    out = sc.measure_between(s, "CHAN1", "CHAN2", "RDELAY")
+    assert ":CHAN2:DISP ON" in s.written
+    assert ":CHAN1:DISP ON" not in s.written
+    assert "CHAN2 display was OFF" in out
+    assert "CHAN1 display" not in out
+
+
+def test_get_waveform_auto_enables_before_source_select(monkeypatch):
+    monkeypatch.setattr(sc.time, "sleep", lambda _: None)
+    pre = "0,0,3,1,1.000000e-06,0,0,1,0,0"
+    s = FakeScope(
+        responses={":CHAN1:DISP?": "0", ":SYSTem:ERRor?": "0", ":WAV:PRE?": pre,
+                   ":CHAN1:SCAL?": "1.0", ":CHAN1:OFFS?": "0"},
+        read_buffer=make_block(b"0.1,0.2,0.3"),
+    )
+    out = sc.get_waveform(s, "CHAN1")
+    assert s.written.index(":CHAN1:DISP ON") < s.written.index(":WAV:SOUR CHAN1")
+    assert any("auto-enabled" in w for w in out["warnings"])
+
+
+def test_get_waveform_enabled_channel_no_warnings():
+    pre = "0,0,3,1,1.000000e-06,0,0,1,0,0"
+    s = FakeScope(
+        responses={":CHAN1:DISP?": "1", ":WAV:PRE?": pre,
+                   ":CHAN1:SCAL?": "1.0", ":CHAN1:OFFS?": "0"},
+        read_buffer=make_block(b"0.1,0.2,0.3"),
+    )
+    out = sc.get_waveform(s, "CHAN1")
+    assert out["warnings"] == []
+
+
+def test_get_waveform_flags_sentinel_samples():
+    pre = "0,0,3,1,1.000000e-06,0,0,1,0,0"
+    s = FakeScope(
+        responses={":CHAN1:DISP?": "1", ":WAV:PRE?": pre,
+                   ":CHAN1:SCAL?": "1.0", ":CHAN1:OFFS?": "0"},
+        read_buffer=make_block(b"9.9e37,0.2,0.3"),
+    )
+    out = sc.get_waveform(s, "CHAN1")
+    assert any("invalid-sentinel" in w for w in out["warnings"])
+
+
+def test_get_waveform_empty_payload_raises_clear_error(monkeypatch):
+    # A channel with no acquired data (e.g. just auto-enabled on a stopped scope) returns
+    # an empty ASCII payload — that must surface as a clear error, not float('').
+    monkeypatch.setattr(sc.time, "sleep", lambda _: None)
+    monkeypatch.setattr(sc, "_WAVEFORM_DATA_RETRY_S", 0.0)  # skip the live polling window
+    pre = "0,0,0,1,1.000000e-06,0,0,1,0,0"
+    s = FakeScope(
+        responses={":CHAN2:DISP?": "0", ":SYSTem:ERRor?": "0", ":WAV:PRE?": pre},
+        read_buffer=make_block(b""),
+    )
+    with pytest.raises(RuntimeError, match="no waveform data") as exc:
+        sc.get_waveform(s, "CHAN2")
+    assert "auto-enabled" in str(exc.value)  # the auto-enable context is carried along
+
+
+def test_get_waveform_refreshes_zero_increment_preamble():
+    # Right after a channel is enabled the scope reports 0 s/point in :WAV:PRE? until the
+    # first sweep completes — get_waveform must re-read the preamble once data exists.
+    pres = iter(["0,0,3,1,0,0,0,1,0,0", "0,0,3,1,1.000000e-06,0,0,1,0,0"])
+    s = FakeScope(
+        responses={":CHAN1:DISP?": "1", ":WAV:PRE?": lambda: next(pres),
+                   ":CHAN1:SCAL?": "1.0", ":CHAN1:OFFS?": "0"},
+        read_buffer=make_block(b"0.1,0.2,0.3"),
+    )
+    out = sc.get_waveform(s, "CHAN1")
+    assert out["time_increment_s"] == 1e-6
+    assert out["time_end_s"] == pytest.approx(2e-6)
+
+
+def test_annotate_measurement_value_passthrough():
+    assert sc.annotate_measurement_value("1.5e+03") == "1.5e+03"
+    assert sc.annotate_measurement_value("not-a-number") == "not-a-number"
+    assert "sentinel" in sc.annotate_measurement_value("-9.9e37")
 
 
 # --------------------------------------------------------------------------- autoscale timeout guard
@@ -506,6 +624,7 @@ def test_get_waveform_dho_sets_point_range():
         "*IDN?":         _DHO_IDN,
         ":WAV:PRE?":     pre,
         ":WAV:DATA?":    "0.1,0.2",  # DHO sends bare CSV — no block header
+        ":CHAN1:DISP?":  "1",
         ":CHAN1:SCAL?":  "0.5",
         ":CHAN1:OFFS?":  "0",
     })
@@ -517,7 +636,8 @@ def test_get_waveform_dho_sets_point_range():
 def test_get_waveform_ds1000z_omits_point_range():
     pre = "0,0,2,1,1.000000e-06,0,0,1,0,0"
     s = FakeScope(
-        responses={":WAV:PRE?": pre, ":CHAN1:SCAL?": "0.5", ":CHAN1:OFFS?": "0"},
+        responses={":WAV:PRE?": pre, ":CHAN1:DISP?": "1",
+                   ":CHAN1:SCAL?": "0.5", ":CHAN1:OFFS?": "0"},
         read_buffer=make_block(b"0.1,0.2"),
     )
     sc.get_waveform(s, "CHAN1")
@@ -531,7 +651,8 @@ def test_get_waveform_ds1000z_uses_block_reader():
     ``:WAV:DATA?`` responses dict (used by scope.query)."""
     pre = "0,0,3,1,1.000000e-06,0,0,1,0,0"
     s = FakeScope(
-        responses={":WAV:PRE?": pre, ":CHAN1:SCAL?": "1.0", ":CHAN1:OFFS?": "0"},
+        responses={":WAV:PRE?": pre, ":CHAN1:DISP?": "1",
+                   ":CHAN1:SCAL?": "1.0", ":CHAN1:OFFS?": "0"},
         read_buffer=make_block(b"1.5,-2.5,3.0"),
     )
     out = sc.get_waveform(s, "CHAN1")
@@ -551,6 +672,7 @@ def test_get_waveform_accepts_dho_bare_csv():
         "*IDN?":         _DHO_IDN,
         ":WAV:PRE?":     pre,
         ":WAV:DATA?":    "1.5,-2.5,3.0",  # bare CSV — no block header
+        ":CHAN1:DISP?":  "1",
         ":CHAN1:SCAL?":  "1.0",
         ":CHAN1:OFFS?":  "0",
     })
@@ -559,21 +681,24 @@ def test_get_waveform_accepts_dho_bare_csv():
 
 
 def test_measure_dho_uses_statistic_item():
-    s = FakeScope(responses={"*IDN?": _DHO_IDN, ":MEASure:ITEM?": "1.234000e+00"})
+    s = FakeScope(responses={"*IDN?": _DHO_IDN, ":MEASure:ITEM?": "1.234000e+00",
+                             ":CHAN1:DISP?": "1"})
     assert sc.measure(s, "CHAN1", "vpp") == "1.234000e+00"
     assert ":MEASure:STATistic:ITEM VPP,CHAN1" in s.written
     assert ":MEASure:ITEM VPP,CHAN1" not in s.written
 
 
 def test_measure_between_dho_maps_ds1000z_names():
-    s = FakeScope(responses={"*IDN?": _DHO_IDN, ":MEASure:ITEM?": "1.0e-06"})
+    s = FakeScope(responses={"*IDN?": _DHO_IDN, ":MEASure:ITEM?": "1.0e-06",
+                             ":CHAN1:DISP?": "1", ":CHAN2:DISP?": "1"})
     sc.measure_between(s, "CHAN1", "CHAN2", "RDELAY")
     # DS1000Z RDELAY auto-maps to the DHO rise-to-rise item via STATistic registration.
     assert ":MEASure:STATistic:ITEM RRDELAY,CHAN1,CHAN2" in s.written
 
 
 def test_measure_between_dho_accepts_native_matrix_item():
-    s = FakeScope(responses={"*IDN?": _DHO_IDN, ":MEASure:ITEM?": "1.0e-06"})
+    s = FakeScope(responses={"*IDN?": _DHO_IDN, ":MEASure:ITEM?": "1.0e-06",
+                             ":CHAN1:DISP?": "1", ":CHAN2:DISP?": "1"})
     sc.measure_between(s, "CHAN1", "CHAN2", "RFDELAY")
     assert ":MEASure:STATistic:ITEM RFDELAY,CHAN1,CHAN2" in s.written
 

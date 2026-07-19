@@ -69,6 +69,9 @@ def describe_waveform(data: dict) -> str:
     window_s = t_end - t_start
     x_inc    = data["time_increment_s"]
     ch       = data["channel"]
+    # Warnings raised during capture (e.g. channel auto-enabled) — merged into the
+    # analysis warnings so they survive every return path.
+    upstream_warnings = list(data.get("warnings") or [])
 
     lines = [f"=== Waveform: {ch} ==="]
 
@@ -105,6 +108,8 @@ def describe_waveform(data: dict) -> str:
         lines.append("Shape  : low-amplitude / likely noise — frequency & shape interpretation suppressed")
         lines.append("")
         lines.append("Warnings:")
+        for w in upstream_warnings:
+            lines.append(f"  ⚠ {w}")
         lines.append(
             f"  ⚠ Vpp ({_fmt_si(vpp,'V')}) is only {fill_frac*100:.1f}% of the {_fmt_si(full_scale_vpp,'V')} "
             f"vertical full-scale window ({_fmt_si(y_scale,'V')}/div, ≈{divs_pp:.2f} divisions peak-to-peak). "
@@ -187,7 +192,7 @@ def describe_waveform(data: dict) -> str:
             )
 
     # --- Data quality warnings ---
-    warnings = []
+    warnings = list(upstream_warnings)
     edge_thr = max(vpp * 0.05, 4e-3)
 
     # Low amplitude: real signal, but small relative to full scale so noisy and imprecise.
