@@ -145,6 +145,41 @@ def test_open_usb_falls_back_to_ivi(monkeypatch):
     assert sc.active_backend() == "@ivi"
 
 
+def test_explicit_usb_resource_skips_discovery_and_retries_open(monkeypatch):
+    resource = "USB0::0x1AB1::0x04CE::DS1ZA1::INSTR"
+    monkeypatch.setenv("RIGOL_USB_RESOURCE", f" {resource} ")
+    monkeypatch.setenv("RIGOL_USB_SERIAL", "ignored")
+
+    class DirectResourceManager(FakeResourceManager):
+        def list_resources(self):
+            pytest.fail("An explicit resource should bypass discovery")
+
+    def unavailable(name):
+        assert name == resource
+        raise ValueError("No device found")
+
+    winusb = DirectResourceManager(scope_factory=unavailable)
+    ivi = DirectResourceManager()
+    _patch_rms(monkeypatch, {"@py": winusb, "@ivi": ivi})
+
+    rm, scope = sc._open_usb_scope()
+    assert winusb.closed
+    assert rm is ivi and scope.resource_name == resource
+    assert sc.active_backend() == "@ivi"
+
+
+@pytest.mark.parametrize("resource", [
+    "USB0::0x0699::0x0368::TEK1::INSTR",
+    "USB0::0x1AB1::0x04CE::DS1ZA1::RAW",
+    "TCPIP0::192.168.1.50::5555::SOCKET",
+])
+def test_explicit_usb_resource_rejects_other_addresses(monkeypatch, resource):
+    monkeypatch.setenv("RIGOL_USB_RESOURCE", resource)
+    _patch_rms(monkeypatch, {})
+    with pytest.raises(RuntimeError, match="RIGOL_USB_RESOURCE must be"):
+        sc._open_usb_scope()
+
+
 def test_open_usb_none_found_raises_with_guidance(monkeypatch):
     mapping = {"@py": FakeResourceManager(()), "@ivi": FakeResourceManager(())}
     _patch_rms(monkeypatch, mapping)
@@ -194,6 +229,24 @@ def test_get_scope_usb_uses_usb_timeout(monkeypatch):
     assert s is ivi_scope
     assert s.timeout == sc._USB_TIMEOUT_MS
     assert sc.active_backend() == "@ivi"
+    assert s.cleared == 1
+
+
+def test_usb_can_skip_device_clear_at_open_and_invalidate(monkeypatch):
+    resource = "USB0::0x1AB1::0x04CE::DS1ZA1::INSTR"
+    monkeypatch.setenv("RIGOL_USB", "1")
+    monkeypatch.setenv("RIGOL_USB_RESOURCE", resource)
+    monkeypatch.setenv("RIGOL_USB_SKIP_CLEAR", "1")
+    rm = FakeResourceManager()
+    _patch_rms(monkeypatch, {"@py": rm})
+
+    scope = sc.get_scope()
+    assert scope.cleared == 0
+    assert scope.written == ["*CLS"]
+    assert sc.connection_info()["RIGOL_USB_RESOURCE"] == resource
+    assert sc.connection_info()["RIGOL_USB_SKIP_CLEAR"] is True
+    sc.invalidate_scope()
+    assert scope.closed and scope.cleared == 0
 
 
 def test_get_scope_clear_unsupported_is_tolerated(monkeypatch):
