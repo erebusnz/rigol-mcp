@@ -63,14 +63,22 @@ _scope: pyvisa.resources.Resource | None = None
 _driver: ScopeDriver | None = None
 
 
+def _env_enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() not in ("", "0", "false", "no", "off")
+
+
 def _usb_preferred() -> bool:
     """True if RIGOL_USB is set to a truthy value, requesting USB transport."""
-    return os.environ.get("RIGOL_USB", "").strip().lower() not in ("", "0", "false", "no", "off")
+    return _env_enabled("RIGOL_USB")
 
 
 def usb_in_use() -> bool:
     """True when the active transport is USB (USBTMC) rather than LAN."""
     return _usb_preferred()
+
+
+def _skip_usb_clear() -> bool:
+    return usb_in_use() and _env_enabled("RIGOL_USB_SKIP_CLEAR")
 
 
 def active_backend() -> str | None:
@@ -153,6 +161,20 @@ def _close_rm(rm: pyvisa.ResourceManager) -> None:
         pass
 
 
+def _usb_resource_override() -> str:
+    """Return a configured Rigol USBTMC address, validated without VISA I/O."""
+    resource = os.environ.get("RIGOL_USB_RESOURCE", "").strip()
+    if not resource:
+        return ""
+    try:
+        address = pyvisa.rname.ResourceName.from_string(resource)
+        if isinstance(address, pyvisa.rname.USBInstr) and int(address.manufacturer_id, 0) == _RIGOL_USB_VID:
+            return resource
+    except ValueError:
+        pass
+    raise RuntimeError("RIGOL_USB_RESOURCE must be a Rigol USB VISA instrument address (vendor 0x1AB1).")
+
+
 def _open_usb_scope() -> tuple[pyvisa.ResourceManager, pyvisa.resources.Resource]:
     """Open the Rigol USB scope, auto-selecting the backend that can see it.
 
@@ -162,6 +184,7 @@ def _open_usb_scope() -> tuple[pyvisa.ResourceManager, pyvisa.resources.Resource
     in turn and use the first that finds the scope. Returns (resource_manager, resource).
     """
     global _usb_backend_hint
+    explicit_resource = _usb_resource_override()
     # Try the last-known-good backend first, then the rest (dedup, preserve order).
     order = list(dict.fromkeys(
         ([_usb_backend_hint] if _usb_backend_hint else []) + list(_USB_BACKENDS)
@@ -174,7 +197,7 @@ def _open_usb_scope() -> tuple[pyvisa.ResourceManager, pyvisa.resources.Resource
             problems.append(f"{backend}: backend unavailable ({type(exc).__name__}: {exc})")
             continue
         try:
-            resource = find_usb_resource_string(rm)
+            resource = explicit_resource or find_usb_resource_string(rm)
         except RuntimeError as exc:           # backend works but scope not found on it
             problems.append(f"{backend}: {exc}")
             _close_rm(rm)
@@ -183,7 +206,12 @@ def _open_usb_scope() -> tuple[pyvisa.ResourceManager, pyvisa.resources.Resource
             problems.append(f"{backend}: enumeration failed ({type(exc).__name__}: {exc})")
             _close_rm(rm)
             continue
-        scope = rm.open_resource(resource)
+        try:
+            scope = rm.open_resource(resource)
+        except Exception as exc:
+            problems.append(f"{backend}: could not open {resource} ({type(exc).__name__}: {exc})")
+            _close_rm(rm)
+            continue
         _usb_backend_hint = backend
         return rm, scope
 
@@ -216,12 +244,12 @@ def get_scope() -> pyvisa.resources.Resource:
         _scope.chunk_size = 1024 * 1024
         _scope.write_termination = "\n"
         _scope.read_termination = "\n"
-        try:
-            _scope.clear()  # flush any stale data left in the receive buffer
-        except pyvisa.errors.VisaIOError:
-            # USBTMC under pyvisa-py does not support the clear operation; the
-            # initial flush is only a best-effort cleanup, so skip it on that backend.
-            pass
+        if not _skip_usb_clear():
+            try:
+                _scope.clear()  # flush any stale data left in the receive buffer
+            except pyvisa.errors.VisaIOError:
+                # Some backends do not support VISA device clear.
+                pass
         _scope.write("*CLS")  # clear the SCPI error queue (clear() only flushes I/O buffers)
     return _scope
 
@@ -230,10 +258,11 @@ def invalidate_scope() -> None:
     """Close and discard the cached connection so the next call reconnects."""
     global _scope, _driver
     if _scope is not None:
-        try:
-            _scope.clear()
-        except Exception:
-            pass
+        if not _skip_usb_clear():
+            try:
+                _scope.clear()
+            except Exception:
+                pass
         try:
             _scope.close()
         except Exception:
@@ -439,7 +468,11 @@ def connection_info() -> dict:
         "RIGOL_IP":  rigol_ip or "(unset)",
     }
     if usb_in_use():
-        info["RIGOL_USB_SERIAL"] = rigol_serial or "(unset → any Rigol scope)"
+        explicit_resource = os.environ.get("RIGOL_USB_RESOURCE", "").strip()
+        info["RIGOL_USB_RESOURCE"] = explicit_resource or "(unset → discover)"
+        info["RIGOL_USB_SERIAL"] = ("(ignored with explicit resource)" if explicit_resource
+                                    else rigol_serial or "(unset → any Rigol scope)")
+        info["RIGOL_USB_SKIP_CLEAR"] = _skip_usb_clear()
         info["backend_hint"]     = _usb_backend_hint or "(none yet — will auto-detect)"
     else:
         info["lan_target"] = (f"TCPIP0::{rigol_ip}::5555::SOCKET"

@@ -93,6 +93,8 @@ RIGOL_IP=192.168.1.123
 | `RIGOL_IP` | (required for LAN) | Scope IP address |
 | `RIGOL_USB` | (unset) | Set to `1` to connect over USB instead of LAN. The first Rigol USB scope is found automatically. |
 | `RIGOL_USB_SERIAL` | (unset) | When several Rigol scopes are on USB, pin a specific one by serial number. |
+| `RIGOL_USB_RESOURCE` | (unset) | Full Rigol USB VISA resource address. Bypasses discovery and takes precedence over `RIGOL_USB_SERIAL`. |
+| `RIGOL_USB_SKIP_CLEAR` | (unset) | Set to `1` to skip VISA device clear on USB when it hangs on the instrument. |
 | `RIGOL_ENABLE_SEND_RAW` | (unset) | Set to `1` to enable the `send_raw` tool (arbitrary SCPI). Off by default — see [Tools](#tools). |
 | `RIGOL_SCREENSHOT_DIR` | `screenshots/` | Directory for saved PNG screenshots |
 | `RIGOL_WAVEFORM_DIR` | `waveforms/` | Parent directory for full acquisition exports |
@@ -107,6 +109,10 @@ on USB (vendor ID `0x1AB1`) and connects to it. If more than one scope is connec
 RIGOL_USB=1
 # RIGOL_USB_SERIAL=DS1ZA000000000   # only needed if more than one scope is on USB
 ```
+
+If VISA discovery hangs, copy the full USB resource address from your VISA test panel
+into `RIGOL_USB_RESOURCE`. If VISA device clear hangs, set `RIGOL_USB_SKIP_CLEAR=1`.
+Both settings apply when `RIGOL_USB=1`.
 
 #### Windows USB instructions
 
