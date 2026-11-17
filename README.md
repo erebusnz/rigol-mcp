@@ -177,6 +177,40 @@ Add to your `.mcp.json` (or Claude Desktop MCP config):
 
 For **USB**, replace the `RIGOL_IP` entry in `env` with `"RIGOL_USB": "1"` (see [USB connection](#usb-connection)).
 
+### Running over HTTP
+
+By default the server speaks MCP over stdio and is started by the MCP client. It can also run
+as a long-lived service, for example on a small lab computer next to the scope, serving
+**streamable HTTP** at `/mcp`:
+
+```bash
+export RIGOL_IP=192.168.1.123
+export RIGOL_MCP_TOKEN="$(openssl rand -hex 32)"
+uv run rigol-mcp --transport http --host 0.0.0.0 --port 8000
+```
+
+| Variable | Flag | Default | Description |
+|---|---|---|---|
+| `RIGOL_MCP_TRANSPORT` | `--transport` | `stdio` | `stdio` or `http` |
+| `RIGOL_MCP_HOST` | `--host` | `127.0.0.1` | Address to listen on |
+| `RIGOL_MCP_PORT` | `--port` | `8000` | Port to listen on |
+| `RIGOL_MCP_TOKEN` | — | (none) | Bearer token required from HTTP clients |
+| `RIGOL_MCP_ALLOW_NO_AUTH` | `--allow-no-auth` | off | Allow a non-loopback address without a token |
+
+When `RIGOL_MCP_TOKEN` is set, every request must carry `Authorization: Bearer <token>`. The
+server refuses to start on a non-loopback address without a token, since anyone who can reach
+it could control the scope. The token doesn't encrypt traffic; use a reverse proxy with HTTPS
+if it crosses an untrusted network.
+
+Connect Claude Code to it:
+
+```bash
+claude mcp add --transport http rigol http://<host>:8000/mcp \
+  --header "Authorization: Bearer $RIGOL_MCP_TOKEN"
+```
+
+All sessions share one instrument connection, and scope access stays serialised.
+
 ## Tools
 
 ### Identification & State

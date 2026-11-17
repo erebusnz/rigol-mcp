@@ -1,6 +1,8 @@
 """Rigol DS1000Z MCP server."""
 
+import argparse
 import base64
+import hmac
 import json
 import os
 from datetime import datetime
@@ -614,13 +616,112 @@ async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
     raise ValueError(f"Unknown tool: {name}")
 
 
-def main() -> None:
-    asyncio.run(_run())
+# --- Transports ---------------------------------------------------------------------
+#
+# stdio (default): started by the MCP client. http: a long-lived service serving MCP over
+# streamable HTTP at /mcp, e.g. on a lab host next to the scope. HTTP support is imported
+# lazily so stdio users are unaffected by the extra dependencies.
+
+_LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 
 
 async def _run() -> None:
     async with stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())
+
+
+def _require_bearer(app, token: str):
+    """ASGI wrapper that rejects requests without ``Authorization: Bearer <token>``."""
+    expected = f"Bearer {token}".encode()
+
+    async def wrapped(scope, receive, send):
+        if scope["type"] == "http":
+            provided = dict(scope["headers"]).get(b"authorization", b"")
+            if not hmac.compare_digest(provided, expected):
+                await send({
+                    "type": "http.response.start",
+                    "status": 401,
+                    "headers": [(b"content-type", b"text/plain"), (b"www-authenticate", b"Bearer")],
+                })
+                await send({"type": "http.response.body", "body": b"Unauthorized\n"})
+                return
+        await app(scope, receive, send)
+
+    return wrapped
+
+
+class _ASGIEndpoint:
+    """Wrap an ASGI callable so Starlette's Route treats it as an app, not a view."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        await self.app(scope, receive, send)
+
+
+def build_http_app(token: str | None = None):
+    """Starlette app serving the MCP server over streamable HTTP at ``/mcp``."""
+    import contextlib
+
+    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+
+    session_manager = StreamableHTTPSessionManager(app=server)
+    handler = session_manager.handle_request
+    if token:
+        handler = _require_bearer(handler, token)
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app):
+        async with session_manager.run():
+            yield
+
+    return Starlette(routes=[Route("/mcp", endpoint=_ASGIEndpoint(handler))], lifespan=lifespan)
+
+
+def check_http_exposure(host: str, token: str | None, allow_no_auth: bool) -> None:
+    """Refuse to expose scope control on the network without a token."""
+    if host not in _LOOPBACK and not token and not allow_no_auth:
+        raise SystemExit(
+            f"Refusing to serve on {host} without authentication: anyone on the network could "
+            "control the oscilloscope. Set RIGOL_MCP_TOKEN (clients send it as "
+            "'Authorization: Bearer <token>'), or pass --allow-no-auth if you really mean it."
+        )
+
+
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    env = os.environ
+    parser = argparse.ArgumentParser(prog="rigol-mcp", description="Rigol oscilloscope MCP server")
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "http"],
+        default=env.get("RIGOL_MCP_TRANSPORT", "stdio"),
+        help="stdio (default, started by the MCP client) or http (streamable HTTP at /mcp)",
+    )
+    parser.add_argument("--host", default=env.get("RIGOL_MCP_HOST", "127.0.0.1"))
+    parser.add_argument("--port", type=int, default=int(env.get("RIGOL_MCP_PORT", "8000")))
+    parser.add_argument(
+        "--allow-no-auth",
+        action="store_true",
+        default=env.get("RIGOL_MCP_ALLOW_NO_AUTH", "").strip().lower() in ("1", "true", "yes", "on"),
+        help="allow serving on a non-loopback address without RIGOL_MCP_TOKEN",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = _parse_args(argv)
+    if args.transport == "stdio":
+        asyncio.run(_run())
+        return
+
+    import uvicorn
+
+    token = os.environ.get("RIGOL_MCP_TOKEN") or None
+    check_http_exposure(args.host, token, args.allow_no_auth)
+    uvicorn.run(build_http_app(token), host=args.host, port=args.port, log_level="info")
 
 
 if __name__ == "__main__":
