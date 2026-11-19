@@ -111,7 +111,8 @@ class TestExposureGuard:
 
 class TestArgs:
     def test_defaults(self, monkeypatch):
-        for var in ("RIGOL_MCP_TRANSPORT", "RIGOL_MCP_HOST", "RIGOL_MCP_PORT", "RIGOL_MCP_ALLOW_NO_AUTH"):
+        for var in ("RIGOL_MCP_TRANSPORT", "RIGOL_MCP_HOST", "RIGOL_MCP_PORT", "RIGOL_MCP_ALLOW_NO_AUTH",
+                    "RIGOL_MCP_ALLOWED_HOSTS"):
             monkeypatch.delenv(var, raising=False)
         args = srv._parse_args([])
         assert (args.transport, args.host, args.port, args.allow_no_auth) == ("stdio", "127.0.0.1", 8000, False)
@@ -127,3 +128,54 @@ class TestArgs:
     def test_cli_overrides_env(self, monkeypatch):
         monkeypatch.setenv("RIGOL_MCP_TRANSPORT", "http")
         assert srv._parse_args(["--transport", "stdio"]).transport == "stdio"
+
+ACCEPT = "application/json, text/event-stream"
+
+
+def test_no_token_refuses_foreign_host(http_url_no_token):
+    # DNS rebinding: a page on attacker.example resolving to 127.0.0.1 sends its own Host.
+    response = httpx.post(
+        http_url_no_token,
+        json={},
+        headers={"Host": "attacker.example:8000", "Accept": ACCEPT},
+    )
+    assert response.status_code == 421
+
+
+def test_no_token_refuses_foreign_origin(http_url_no_token):
+    response = httpx.post(
+        http_url_no_token,
+        json={},
+        headers={"Origin": "http://attacker.example", "Accept": ACCEPT},
+    )
+    assert response.status_code == 403
+
+
+def test_token_accepts_proxy_host(http_url):
+    # Behind a reverse proxy the Host is the proxy's name; the token is the check.
+    response = httpx.post(
+        http_url,
+        json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+        headers={
+            "Host": "labpi.lan",
+            "Authorization": f"Bearer {TOKEN}",
+            "Accept": ACCEPT,
+        },
+    )
+    assert response.status_code not in (401, 403, 421)
+
+
+class TestRebindingSettings:
+    def test_loopback_and_bind_host(self):
+        s = srv.dns_rebinding_settings("192.168.1.5")
+        assert {"127.0.0.1:*", "localhost:*", "[::1]:*", "192.168.1.5:*"} == set(
+            s.allowed_hosts
+        )
+        assert "http://localhost:*" in s.allowed_origins
+
+    def test_wildcard_bind_adds_nothing(self):
+        assert "0.0.0.0:*" not in srv.dns_rebinding_settings("0.0.0.0").allowed_hosts
+
+    def test_extra_hosts(self):
+        s = srv.dns_rebinding_settings("0.0.0.0", ["bench-pi.lan", "fe80::1"])
+        assert {"bench-pi.lan:*", "[fe80::1]:*"} <= set(s.allowed_hosts)

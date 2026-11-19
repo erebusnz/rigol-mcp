@@ -196,11 +196,18 @@ uv run rigol-mcp --transport http --host 0.0.0.0 --port 8000
 | `RIGOL_MCP_PORT` | `--port` | `8000` | Port to listen on |
 | `RIGOL_MCP_TOKEN` | — | (none) | Bearer token required from HTTP clients |
 | `RIGOL_MCP_ALLOW_NO_AUTH` | `--allow-no-auth` | off | Allow a non-loopback address without a token |
+| `RIGOL_MCP_ALLOWED_HOSTS` | `--allowed-hosts` | (none) | Without a token: extra host names clients may use in the URL, comma-separated |
 
 When `RIGOL_MCP_TOKEN` is set, every request must carry `Authorization: Bearer <token>`. The
 server refuses to start on a non-loopback address without a token, since anyone who can reach
 it could control the scope. The token doesn't encrypt traffic; use a reverse proxy with HTTPS
 if it crosses an untrusted network.
+
+Without a token, the server only accepts requests addressed to `localhost`, `127.0.0.1`,
+`[::1]`, the `--host` address and any `--allowed-hosts` names, and refuses browser requests
+from other origins. This stops a web page on the same machine from reaching the scope through
+DNS rebinding. With a token the check is off (the page can't know the token, and a reverse
+proxy in front may pass its own host name).
 
 Connect Claude Code to it:
 
