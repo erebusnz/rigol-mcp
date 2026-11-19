@@ -4,6 +4,7 @@ import argparse
 import base64
 import hmac
 import json
+import sys
 import os
 from datetime import datetime
 from pathlib import Path
@@ -630,12 +631,12 @@ def _host_patterns(hosts) -> list[str]:
     """Host header patterns (any port) for the given names or addresses."""
     patterns = []
     for host in hosts:
-        host = host.strip()
+        host = host.strip().lower()
         if not host:
             continue
         if ":" in host and not host.startswith("["):
             host = f"[{host}]"  # IPv6 literal, as it appears in a Host header
-        patterns.append(f"{host}:*")
+        patterns += [host, f"{host}:*"]  # without a port (80/443) and with any port
     return patterns
 
 
@@ -667,12 +668,17 @@ async def _run() -> None:
 
 def _require_bearer(app, token: str):
     """ASGI wrapper that rejects requests without ``Authorization: Bearer <token>``."""
-    expected = f"Bearer {token}".encode()
+    expected = token.encode()
+
+    def authorized(header: bytes) -> bool:
+        scheme, _, credentials = header.partition(b" ")
+        # The scheme is case-insensitive (RFC 7235); the token is compared in constant time.
+        return scheme.lower() == b"bearer" and hmac.compare_digest(credentials.strip(), expected)
 
     async def wrapped(scope, receive, send):
         if scope["type"] == "http":
             provided = dict(scope["headers"]).get(b"authorization", b"")
-            if not hmac.compare_digest(provided, expected):
+            if not authorized(provided):
                 await send({
                     "type": "http.response.start",
                     "status": 401,
@@ -767,6 +773,9 @@ def main(argv: list[str] | None = None) -> None:
     token = os.environ.get("RIGOL_MCP_TOKEN") or None
     check_http_exposure(args.host, token, args.allow_no_auth)
     extra_hosts = [h for h in args.allowed_hosts.split(",") if h.strip()]
+    if not token:
+        allowed = ", ".join(dns_rebinding_settings(args.host, extra_hosts).allowed_hosts)
+        print(f"No token set: accepting requests addressed to {allowed}", file=sys.stderr)
     app = build_http_app(token, bind_host=args.host, extra_hosts=extra_hosts)
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 

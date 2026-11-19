@@ -168,7 +168,7 @@ def test_token_accepts_proxy_host(http_url):
 class TestRebindingSettings:
     def test_loopback_and_bind_host(self):
         s = srv.dns_rebinding_settings("192.168.1.5")
-        assert {"127.0.0.1:*", "localhost:*", "[::1]:*", "192.168.1.5:*"} == set(
+        assert {"127.0.0.1:*", "localhost:*", "[::1]:*", "192.168.1.5:*", "localhost"} <= set(
             s.allowed_hosts
         )
         assert "http://localhost:*" in s.allowed_origins
@@ -179,3 +179,77 @@ class TestRebindingSettings:
     def test_extra_hosts(self):
         s = srv.dns_rebinding_settings("0.0.0.0", ["bench-pi.lan", "fe80::1"])
         assert {"bench-pi.lan:*", "[fe80::1]:*"} <= set(s.allowed_hosts)
+
+
+INIT = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+        "protocolVersion": "2025-06-18",
+        "capabilities": {},
+        "clientInfo": {"name": "test", "version": "1"},
+    },
+}
+
+
+def _client(app, host):
+    from starlette.testclient import TestClient
+
+    return TestClient(app, base_url=f"http://{host}")
+
+
+class TestHostCheck:
+    @pytest.mark.parametrize("host", ["localhost", "localhost:8000", "127.0.0.1:8000", "[::1]:8000"])
+    def test_loopback_accepted(self, host):
+        with _client(srv.build_http_app(None), "localhost") as client:
+            response = client.post("/mcp", json=INIT, headers={"Accept": ACCEPT, "Host": host})
+        assert response.status_code == 200, response.text
+
+    @pytest.mark.parametrize("host", ["bench-pi.lan", "bench-pi.lan:8000", "BENCH-PI.lan"])
+    def test_allowed_host_with_or_without_port(self, host):
+        app = srv.build_http_app(None, bind_host="0.0.0.0", extra_hosts=["Bench-Pi.LAN"])
+        with _client(app, host) as client:
+            response = client.post("/mcp", json=INIT, headers={"Accept": ACCEPT})
+        assert response.status_code == 200, response.text
+
+    def test_wildcard_bind_refuses_lan_address(self):
+        app = srv.build_http_app(None, bind_host="0.0.0.0")
+        with _client(app, "192.168.1.5:8000") as client:
+            response = client.post("/mcp", json=INIT, headers={"Accept": ACCEPT})
+        assert response.status_code == 421
+
+    @pytest.mark.parametrize("method", ["GET", "DELETE"])
+    def test_foreign_host_refused_on_open_session(self, method):
+        # A rebinding page that learned a session id still can't use it from its own Host.
+        with _client(srv.build_http_app(None), "localhost:8000") as client:
+            opened = client.post("/mcp", json=INIT, headers={"Accept": ACCEPT})
+            session = opened.headers["mcp-session-id"]
+            response = client.request(
+                method,
+                "/mcp",
+                headers={
+                    "Host": "attacker.example:8000",
+                    "Accept": "text/event-stream",
+                    "mcp-session-id": session,
+                },
+            )
+        assert response.status_code == 421
+
+
+class TestBearer:
+    def test_scheme_case_insensitive(self):
+        app = srv.build_http_app("secret")
+        with _client(app, "labpi.lan") as client:
+            response = client.post(
+                "/mcp", json=INIT, headers={"Accept": ACCEPT, "Authorization": "bearer secret"}
+            )
+        assert response.status_code == 200, response.text
+
+    def test_token_alone_refused(self):
+        app = srv.build_http_app("secret")
+        with _client(app, "labpi.lan") as client:
+            response = client.post(
+                "/mcp", json=INIT, headers={"Accept": ACCEPT, "Authorization": "secret"}
+            )
+        assert response.status_code == 401

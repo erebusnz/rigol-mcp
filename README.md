@@ -207,7 +207,9 @@ Without a token, the server only accepts requests addressed to `localhost`, `127
 `[::1]`, the `--host` address and any `--allowed-hosts` names, and refuses browser requests
 from other origins. This stops a web page on the same machine from reaching the scope through
 DNS rebinding. With a token the check is off (the page can't know the token, and a reverse
-proxy in front may pass its own host name).
+proxy in front may pass its own host name). Names match with or without a port and
+in any case. A wildcard `--host` (`0.0.0.0`) adds no names: list the addresses or names
+clients put in the URL in `--allowed-hosts`. The server prints the accepted names at startup.
 
 Connect Claude Code to it:
 
