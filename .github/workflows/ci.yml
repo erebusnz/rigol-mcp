@@ -32,3 +32,24 @@ jobs:
 
       - name: Run tests
         run: uv run --no-sync pytest
+
+  smoke-unlocked:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+
+      # Resolve runtime dependencies from package metadata, independently of uv.lock.
+      - name: Install without the lockfile
+        run: |
+          uv venv .venv
+          uv pip install --python .venv/bin/python --refresh .
+          uv pip check --python .venv/bin/python
+
+      - name: Import the installed server
+        run: |
+          .venv/bin/python -c "import rigol_mcp.server; from importlib.metadata import version; print('MCP', version('mcp'))"

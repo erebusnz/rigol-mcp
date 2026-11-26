@@ -362,10 +362,17 @@ The two backends frame USBTMC reads differently, so block reads (waveform/screen
 ## Testing
 
 Unit tests are fully offline — the VISA layer is faked, so no instrument is required.
+Protocol tests cover MCP Python SDK v2 with both legacy initialization and the
+2026-07-28 protocol, including the installed command over stdio. Tool argument
+validation and error responses are checked before instrument access.
 
 ```bash
 uv run --extra test pytest      # or: uv sync --extra test && uv run pytest
 ```
+
+CI also performs a fresh installation without `uv.lock` and imports the server,
+so dependency versions selected by new installations are checked alongside the
+locked test environment.
 
 ## Limitations
 

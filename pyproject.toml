@@ -8,7 +8,8 @@ version = "0.1.0"
 description = "MCP server for Rigol DS1000Z oscilloscope over LAN"
 requires-python = ">=3.11"
 dependencies = [
-    "mcp[cli]>=1.0.0,<2",
+    "mcp[cli]>=2.3.0,<3",
+    "jsonschema>=4.20.0",   # validate tool arguments before invoking instrument handlers
     "pyvisa>=1.14.0",
     "pyvisa-py>=0.7.0",
     "pyusb>=1.2.0",          # USBTMC transport for pyvisa-py (pure-Python; installs anywhere)

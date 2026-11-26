@@ -18,8 +18,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import mcp.types as types
+import jsonschema
 import pyvisa
-from mcp.server import Server
+from mcp.server import Server, ServerRequestContext
 from mcp.server.stdio import stdio_server
 
 from rigol_mcp.waveform_analysis import describe_waveform as _describe_waveform
@@ -33,22 +34,6 @@ from rigol_mcp.scope import (
     idn, connection_info, set_driver_from_idn,
     measure, measure_between, MEASURE_ITEMS, MEASURE_ITEMS_TWO_SOURCE,
     get_scope_state, set_channel, set_timebase, set_trigger, get_waveform,
-)
-
-server = Server(
-    "rigol-mcp",
-    instructions=(
-        "Rigol oscilloscope control over SCPI.\n"
-        "- Read the scope with the data tools first: measure/measure_between for numeric "
-        "readings, get_waveform for trace shape/frequency/amplitude analysis, "
-        "get_scope_state for configuration. They return compact structured text that is "
-        "far cheaper and easier to reason over than an image.\n"
-        "- screenshot is a fallback for genuinely visual checks only (on-screen menus, "
-        "cursor placement, confirming what a human sees) — do not use it as the default "
-        "way to inspect signals.\n"
-        "- Call tools strictly sequentially, never concurrently: all commands share one "
-        "instrument connection."
-    ),
 )
 
 # Serialises all VISA operations — the underlying TCP socket is not thread/async safe.
@@ -98,7 +83,6 @@ async def _call(fn, *args, _retry=True, **kwargs):
             _last_call_time = time.monotonic()
 
 
-@server.list_tools()
 async def list_tools() -> list[types.Tool]:
     tools = [
         types.Tool(
@@ -106,14 +90,14 @@ async def list_tools() -> list[types.Tool]:
             description="Release this server's cached scope connection without opening one or "
                         "sending acquisition commands. Waits for any current scope operation to "
                         "finish. A later scope tool may reconnect. Does not disconnect other servers.",
-            inputSchema={"type": "object", "properties": {}, "additionalProperties": False},
+            input_schema={"type": "object", "properties": {}, "additionalProperties": False},
         ),
         types.Tool(
             name="get_acquisition_info",
             description="Read acquisition status, sample rate, memory-depth setting, enabled channels, "
                         "and implemented transfer modes. Does not arm or stop the scope. AUTO memory "
                         "depth is a setting; export preambles report actual record lengths.",
-            inputSchema={"type": "object", "properties": {}, "additionalProperties": False},
+            input_schema={"type": "object", "properties": {}, "additionalProperties": False},
         ),
         types.Tool(
             name="export_acquisition",
@@ -122,7 +106,7 @@ async def list_tools() -> list[types.Tool]:
                         "Defaults to all enabled analog channels. Requires STOP; never stops, rearms, "
                         "enables channels, or falls back to screen data. Keep scope controls untouched "
                         "during export. Partial transfers are saved and explicitly marked incomplete.",
-            inputSchema={
+            input_schema={
                 "type": "object", "additionalProperties": False,
                 "properties": {
                     "channels": {"type": "array", "minItems": 1, "maxItems": 4,
@@ -147,7 +131,7 @@ async def list_tools() -> list[types.Tool]:
                 "or confirming what a human sees). "
                 "Do not call concurrently with any other rigol tool."
             ),
-            inputSchema={"type": "object", "properties": {}, "required": []},
+            input_schema={"type": "object", "properties": {}, "required": []},
         ),
         types.Tool(
             name="idn",
@@ -163,7 +147,7 @@ async def list_tools() -> list[types.Tool]:
                 "was selected. "
                 "Do not call concurrently with any other rigol tool."
             ),
-            inputSchema={"type": "object", "properties": {}, "required": []},
+            input_schema={"type": "object", "properties": {}, "required": []},
         ),
         types.Tool(
             name="get_scope_state",
@@ -173,7 +157,7 @@ async def list_tools() -> list[types.Tool]:
                 "Call this at the start of a session to understand the current setup. "
                 "Do not call concurrently with any other rigol tool."
             ),
-            inputSchema={"type": "object", "properties": {}, "required": []},
+            input_schema={"type": "object", "properties": {}, "required": []},
         ),
         types.Tool(
             name="set_channel",
@@ -186,7 +170,7 @@ async def list_tools() -> list[types.Tool]:
                 "Returns the resulting channel configuration. "
                 "Do not call concurrently with any other rigol tool."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "channel":    {"type": "string", "enum": ["CHAN1", "CHAN2", "CHAN3", "CHAN4"]},
@@ -212,7 +196,7 @@ async def list_tools() -> list[types.Tool]:
                 "Returns the resulting timebase configuration. "
                 "Do not call concurrently with any other rigol tool."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "scale_s_div": {"type": ["number", "string"], "description": "Time per division in seconds"},
@@ -231,7 +215,7 @@ async def list_tools() -> list[types.Tool]:
                 "Returns the resulting trigger configuration. "
                 "Do not call concurrently with any other rigol tool."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "source": {"type": "string", "description": "Trigger source, e.g. CHAN1"},
@@ -273,7 +257,7 @@ async def list_tools() -> list[types.Tool]:
                 "For delay or phase between two channels use measure_between. "
                 "Do not call concurrently with any other rigol tool."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "channel": {"type": "string", "enum": ["CHAN1", "CHAN2", "CHAN3", "CHAN4"]},
@@ -299,7 +283,7 @@ async def list_tools() -> list[types.Tool]:
                 "any source channel whose display is OFF is auto-enabled first (noted in the result). "
                 "Do not call concurrently with any other rigol tool."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "source1": {"type": "string", "enum": ["CHAN1", "CHAN2", "CHAN3", "CHAN4"], "description": "Reference channel"},
@@ -333,7 +317,7 @@ async def list_tools() -> list[types.Tool]:
                 "if edges are not near the DC mean, adjust offset so right edge = N×(period/2) − 6×scale. "
                 "Do not call concurrently with any other rigol tool."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "channel":  {"type": "string", "enum": ["CHAN1", "CHAN2", "CHAN3", "CHAN4"]},
@@ -353,7 +337,7 @@ async def list_tools() -> list[types.Tool]:
                 "Returns the resulting cursor readouts. "
                 "Do not call concurrently with any other rigol tool."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "mode": {"type": "string", "enum": ["OFF", "MANUAL", "TRACK"]},
@@ -371,7 +355,7 @@ async def list_tools() -> list[types.Tool]:
                 "inv_delta_x is 1/Δt — the frequency between the two cursors. "
                 "Do not call concurrently with any other rigol tool."
             ),
-            inputSchema={"type": "object", "properties": {}, "required": []},
+            input_schema={"type": "object", "properties": {}, "required": []},
         ),
         types.Tool(
             name="send_raw",
@@ -382,7 +366,7 @@ async def list_tools() -> list[types.Tool]:
                 "Use as an escape hatch when no dedicated tool covers the operation. "
                 "Do not call concurrently with any other rigol tool."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "command": {"type": "string", "description": "SCPI command, e.g. ':CHAN1:SCAL?' or ':CHAN1:DISP ON'"},
@@ -393,12 +377,12 @@ async def list_tools() -> list[types.Tool]:
         types.Tool(
             name="check_error",
             description="Query the SCPI error queue. Returns the error if present, or 'No error' if clear. Do not call concurrently with any other rigol tool.",
-            inputSchema={"type": "object", "properties": {}, "required": []},
+            input_schema={"type": "object", "properties": {}, "required": []},
         ),
         types.Tool(
             name="run",
             description="Start continuous acquisition. Returns trigger status after the command. Do not call concurrently with any other rigol tool.",
-            inputSchema={"type": "object", "properties": {}, "required": []},
+            input_schema={"type": "object", "properties": {}, "required": []},
         ),
         types.Tool(
             name="stop",
@@ -408,7 +392,7 @@ async def list_tools() -> list[types.Tool]:
                 "Returns trigger status after the command. "
                 "Do not call concurrently with any other rigol tool."
             ),
-            inputSchema={"type": "object", "properties": {}, "required": []},
+            input_schema={"type": "object", "properties": {}, "required": []},
         ),
         types.Tool(
             name="single",
@@ -419,7 +403,7 @@ async def list_tools() -> list[types.Tool]:
                 "call stop or check trigger status before reading measurements. "
                 "Do not call concurrently with any other rigol tool."
             ),
-            inputSchema={"type": "object", "properties": {}, "required": []},
+            input_schema={"type": "object", "properties": {}, "required": []},
         ),
         types.Tool(
             name="autoscale",
@@ -428,7 +412,7 @@ async def list_tools() -> list[types.Tool]:
                 "Takes a few seconds; call get_scope_state afterwards to see the resulting configuration. "
                 "Do not call concurrently with any other rigol tool."
             ),
-            inputSchema={"type": "object", "properties": {}, "required": []},
+            input_schema={"type": "object", "properties": {}, "required": []},
         ),
     ]
     # send_raw is an arbitrary-SCPI escape hatch — only expose it when explicitly enabled.
@@ -437,7 +421,6 @@ async def list_tools() -> list[types.Tool]:
     return tools
 
 
-@server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
     global _last_call_time
     if name == "disconnect":
@@ -479,7 +462,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
         b64 = base64.standard_b64encode(png_bytes).decode("ascii")
         return [
             types.TextContent(type="text", text=f"Saved: {filename}"),
-            types.ImageContent(type="image", data=b64, mimeType="image/png"),
+            types.ImageContent(type="image", data=b64, mime_type="image/png"),
         ]
 
     if name == "idn":
@@ -612,6 +595,52 @@ async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
         return [types.TextContent(type="text", text=json.dumps(state, indent=2))]
 
     raise ValueError(f"Unknown tool: {name}")
+
+
+async def _handle_list_tools(
+    ctx: ServerRequestContext, params: types.PaginatedRequestParams | None,
+) -> types.ListToolsResult:
+    return types.ListToolsResult(tools=await list_tools())
+
+
+async def _handle_call_tool(
+    ctx: ServerRequestContext, params: types.CallToolRequestParams,
+) -> types.CallToolResult:
+    # SDK v2's low-level Server no longer validates arguments or turns handler
+    # exceptions into tool results. Keep both behaviors at the protocol boundary,
+    # before any instrument access. Unknown/disabled tools are rejected by call_tool.
+    try:
+        arguments = params.arguments or {}
+        tool = next((tool for tool in await list_tools() if tool.name == params.name), None)
+        if tool is not None:
+            jsonschema.validate(instance=arguments, schema=tool.input_schema)
+        return types.CallToolResult(content=await call_tool(params.name, arguments))
+    except jsonschema.ValidationError as exc:
+        message = f"Input validation error: {exc.message}"
+    except Exception as exc:
+        message = str(exc)
+    return types.CallToolResult(
+        content=[types.TextContent(type="text", text=message)], is_error=True,
+    )
+
+
+server = Server(
+    "rigol-mcp",
+    on_list_tools=_handle_list_tools,
+    on_call_tool=_handle_call_tool,
+    instructions=(
+        "Rigol oscilloscope control over SCPI.\n"
+        "- Read the scope with the data tools first: measure/measure_between for numeric "
+        "readings, get_waveform for trace shape/frequency/amplitude analysis, "
+        "get_scope_state for configuration. They return compact structured text that is "
+        "far cheaper and easier to reason over than an image.\n"
+        "- screenshot is a fallback for genuinely visual checks only (on-screen menus, "
+        "cursor placement, confirming what a human sees) — do not use it as the default "
+        "way to inspect signals.\n"
+        "- Call tools strictly sequentially, never concurrently: all commands share one "
+        "instrument connection."
+    ),
+)
 
 
 def main() -> None:
