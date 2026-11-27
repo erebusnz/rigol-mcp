@@ -12,26 +12,18 @@ Unknown signal (square wave into LCR trap), wrong channel enabled, invalid timeb
 
 ## Supported Hardware
 
-**Rigol DS1000Z / MSO1000Z series (8-bit):**
+Support is selected by exact model name and covers analog channels.
 
-| Model | Channels | Notes |
+| Rigol series | Analog channels | Implemented support |
 |---|---|---|
-| DS1054Z | 4 analog | Most common, 50 MHz |
-| DS1074Z | 4 analog | 70 MHz |
-| DS1074Z-S | 4 analog + signal gen | |
-| DS1104Z | 4 analog | 100 MHz |
-| DS1104Z-S | 4 analog + signal gen | |
-| MSO1054Z | 4 analog + 16 digital | MSO variant |
-| MSO1074Z | 4 analog + 16 digital | |
-| MSO1104Z | 4 analog + 16 digital | |
+| DS1000Z / MSO1000Z | 4 | Control, measurements, screenshots, screen waveforms, and RAW acquisition export |
+| DHO800 / DHO900 / DHO1000 / DHO1000U / DHO4000 | 2 or 4 | Control, measurements, screenshots, and screen waveforms |
+| DS2000A / MSO2000A | 2 | Model and channel information only |
+| MHO900 / MHO98 / MHO2000 | 4 | Model and channel information only |
+| DHO5000 / MHO5000 / MSO/DS9000 | 2, 4, 6, or 8 | Model and channel information only |
 
-**Rigol DHO series (12-bit):**
-
-| Model | Channels | Notes |
-|---|---|---|
-| DHO924S | 4 analog + signal gen | 250 MHz |
-
-Other DHO models (DHO900/1000/4000 families) likely work with the same SCPI dialect but are not verified.
+See [hardware support](docs/hardware-support.md) for exact models, manufacturer
+references, and hardware tests.
 
 The scope connects either over your **local network via Ethernet** (rear panel RJ45) or over **USB** (rear panel USB-B device port). LAN is the default; USB is used when `RIGOL_USB` is set (see [Configuration](#configuration)). USB transport has been validated on DS1000Z; DHO support has so far been validated over LAN only.
 

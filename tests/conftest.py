@@ -117,8 +117,10 @@ def clean_env_and_cache(monkeypatch):
     scope_mod._scope = None
     scope_mod._usb_backend_hint = None
     scope_mod._driver = None
+    scope_mod._idn = None
     yield
     scope_mod._rm = None
     scope_mod._scope = None
     scope_mod._usb_backend_hint = None
     scope_mod._driver = None
+    scope_mod._idn = None

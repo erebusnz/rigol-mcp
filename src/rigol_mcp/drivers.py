@@ -7,7 +7,7 @@ is selected from ``*IDN?`` once per connection.
 
 To add support for a new Rigol family:
   1. Subclass :class:`ScopeDriver` below and override the attributes/methods that differ.
-  2. Implement :meth:`matches` so it recognises the family from its ``*IDN?`` string.
+  2. Register documented model capabilities in models.toml with the driver's family name.
   3. Add an instance to ``_DRIVERS`` (list more specific families before broader ones).
 Nothing in ``scope.py`` should need to change.
 
@@ -16,6 +16,8 @@ than holding a reference, so one instance per family is shared across all connec
 """
 
 import pyvisa
+
+from rigol_mcp.models import capabilities_for
 
 
 class MemoryTransferError(RuntimeError):
@@ -75,7 +77,10 @@ class ScopeDriver:
     @classmethod
     def matches(cls, idn: str) -> bool:
         """True if this driver handles the scope identified by ``idn`` (an ``*IDN?`` string)."""
-        return False
+        try:
+            return capabilities_for(idn).family == cls.name
+        except RuntimeError:
+            return False
 
     # --- screenshot ---
     def screenshot_query(self) -> str:
@@ -185,11 +190,6 @@ class DS1000ZDriver(ScopeDriver):
         return data
     two_source_items = frozenset({"RDELAY", "FDELAY", "RPHASE", "FPHASE"})
 
-    @classmethod
-    def matches(cls, idn: str) -> bool:
-        up = idn.upper()
-        return "DS1" in up or "MSO1" in up
-
     def screenshot_query(self) -> str:
         return ":DISPlay:DATA? ON,OFF,PNG"  # color, invert, format
 
@@ -235,10 +235,6 @@ class DHODriver(ScopeDriver):
         "RDELAY": "RRDELAY", "FDELAY": "FFDELAY",
         "RPHASE": "RRPHASE", "FPHASE": "FFPHASE",
     }
-
-    @classmethod
-    def matches(cls, idn: str) -> bool:
-        return "DHO" in idn.upper()
 
     def screenshot_query(self) -> str:
         return ":DISPlay:DATA? PNG"  # single param; DHO rejects the 3-param DS1000Z form
