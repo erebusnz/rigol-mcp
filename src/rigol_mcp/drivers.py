@@ -229,7 +229,7 @@ class ModernRigolDriver(ScopeDriver):
     """Shared DHO and MHO900 SCPI commands; this base is never registered.
 
     MHO900/MHO98 programming guides: acquisition section 3.3, cursors 3.8,
-    display 3.9, measurements 3.17, and waveforms 3.28. See README for sources.
+    display 3.9, measurements 3.17, and waveforms 3.28. See docs/hardware-support.md for sources.
     Reusing these commands does not enable other DHO/MHO catalog families.
     """
 
@@ -303,7 +303,7 @@ class MHO900Driver(ModernRigolDriver):
     def validate_channel_configuration(self, scope, channel, *, display, vertical):
         # MHO98 firmware 00.01.00 has been reported to silently ignore SCAL/OFFS
         # while the channel is hidden. Require explicit enabling before those writes.
-        # Reference: README's MHO900/MHO98 compatibility notes.
+        # Reference: docs/hardware-support.md, MHO900 and MHO98 compatibility notes.
         if not vertical or display is True:
             return
         if display is False or scope.query(f":{channel}:DISP?").strip().upper() not in ("1", "ON"):

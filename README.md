@@ -12,141 +12,21 @@ Unknown signal (square wave into LCR trap), wrong channel enabled, invalid timeb
 
 ## Supported Hardware
 
-**Rigol DS1000Z / MSO1000Z series (8-bit):**
+Support is selected by exact model name and covers analog channels.
 
-| Model | Channels | Notes |
+| Rigol series | Analog channels | Implemented support |
 |---|---|---|
-| DS1054Z | 4 analog | Most common, 50 MHz |
-| DS1074Z | 4 analog | 70 MHz |
-| DS1074Z-S | 4 analog + signal gen | |
-| DS1104Z | 4 analog | 100 MHz |
-| DS1104Z-S | 4 analog + signal gen | |
-| MSO1074Z | 4 analog + 16 digital | |
-| MSO1104Z | 4 analog + 16 digital | |
+| DS1000Z / MSO1000Z | 4 | Control, measurements, screenshots, screen waveforms, and RAW acquisition export |
+| DHO800 / DHO900 / DHO1000 / DHO1000U / DHO4000 | 2 or 4 | Control, measurements, screenshots, and screen waveforms |
+| DS2000A / MSO2000A | 2 | Model and channel information only |
+| MHO900 / MHO98 | 4 | Control, measurements, screenshots, screen waveforms, and acquisition information; hardware unverified |
+| MHO2000 | 4 | Model and channel information only |
+| DHO5000 / MHO5000 / MSO/DS9000 | 2, 4, 6, or 8 | Model and channel information only |
 
-**Rigol DHO series (12-bit):**
-
-| Model | Channels | Notes |
-|---|---|---|
-| DHO924S | 4 analog + signal gen | 250 MHz |
-
-Registered DHO800/900/1000/1000U/4000 models share the DHO driver. Hardware reports and their limits are listed below; testing one model does not validate the whole family. Newer DHO5000 models have channel metadata only and do not select this driver.
-
-### Recorded hardware reports
-
-These reports describe particular revisions and exercised functions, not complete
-SCPI coverage or a hardware pass for every later change. Offline tests and published
-channel counts are separate from live validation. Reports reviewed on 2026-11-27:
-
-| Model | Report and transport | Recorded coverage and limits |
-|---|---|---|
-| DS1054Z | Maintainer, USB with WinUSB/pyvisa-py; [PR #1 merge report](https://github.com/erebusnz/rigol-mcp/pull/1#issuecomment-4654467429) | Identification, screen waveform, measurement, and screenshot tested end-to-end after the DHO integration. |
-| DS1104Z | Maintainer, USB/pyvisa-py; [PR #8](https://github.com/erebusnz/rigol-mcp/pull/8), earlier [RAW export](https://github.com/erebusnz/rigol-mcp/pull/3) and [recovery/disconnect](https://github.com/erebusnz/rigol-mcp/pull/4) reports | PR #8 exercised identity, four-channel state, acquisition information, invalid-channel rejection, reconnect, and injected-timeout recovery. Earlier reports cover four-channel RAW export and repeated captures. |
-| DHO924S | Contributor `irudoy`, LAN, firmware `00.01.05`; [PR #1 retest](https://github.com/erebusnz/rigol-mcp/pull/1#issuecomment-4650396253) | Acquisition controls, channel/timebase/trigger configuration, measurements with AWG loopback, cursors, and screenshots. The retest found the bare-CSV waveform regression that was fixed before integration. USB was not verified. |
-| DHO804 | Contributor `4pplet`; [PR #7](https://github.com/erebusnz/rigol-mcp/pull/7) | Reports operating a Raspberry Pi CM5 deployment with Caddy HTTPS and Claude Code on a Mac. The scope connection transport, firmware, and per-tool hardware checklist are unspecified; the listed HTTP tests are offline. Record as reported usage. |
-| DS2202A | Contributor report recorded in [PR #5](https://github.com/erebusnz/rigol-mcp/pull/5), USB with NI-VISA | Identification before and after disconnect, predating the revised retry handling. Connection-only evidence; no DS2000A dialect validation or hardware pass for PR #8. |
-| DHO814 | Dave Glover's external `gloveboxes/rigol-mcp` fork, Ethernet, firmware `00.01.05`; [article](https://techcommunity.microsoft.com/blog/educatordeveloperblog/connecting-github-copilot-to-my-oscilloscope/4555545) and [2026-09-10 acceptance report](https://github.com/gloveboxes/rigol-mcp/blob/ffce0bc501ddffcf2f99132c0fb19ebf68bd9dc4/docs/reports/dho814_advanced_mcp_acceptance_report.json) | Reports live signal measurements, cursors, protocol decoding, recording/replay, and RAW transfers. This uses an extended fork; it does not validate upstream behavior or add those features here. Upstream DHO814 remains hardware-unverified. |
-
-Models without a report above remain hardware-unverified in this project. The
-`models.toml` comments preserve the distinction between hardware tests, reported
-usage, connection-only tests, and external-fork evidence.
-
-**Rigol MHO900 / MHO98 (documentation-backed, tested offline):**
-
-The exact models **MHO934, MHO954, MHO984, and MHO98** select the `MHO900` driver.
-All have four analog inputs. The driver shares DHO-style SCPI code for measurements,
-two-source delay/phase measurements, ASCII screen waveforms, PNG screenshots, autoset,
-and cursor positions in seconds. Acquisition information also reports sample rate,
-memory depth setting, acquisition type, and averages. RAW acquisition-memory export,
-digital waveform inputs, and the signal generator are not implemented for these models.
-MHO2000 and MHO5000 remain catalog-only families.
-
-For scale/offset changes, the channel must be displayed or the same `set_channel`
-call must include `display=true`. Combining those changes with `display=false` is
-rejected before any writes; hide the channel in a subsequent call. This avoids a
-[reported MHO98 firmware behavior](https://github.com/zinntikumugai/rigol-oscilloscope-mcp/blob/main/docs/verification/mho98-mvp.md)
-that silently ignores vertical settings on hidden channels.
-
-The command mapping follows Rigol's
-[MHO900 programming guide](https://cdn-aorpci9.actonsoftware.com/acton/cdna/1579/f-cc3e78b8-87a1-4629-a97e-3ea99bf0470c/1/2/MHO900%20ProgrammingGuide.pdf)
-and [MHO98 programming guide](https://cdn-aorpci9.actonsoftware.com/acton/cdna/1579/f-f9e0b843-d3f6-486f-ab64-1b688af67a0f/1/1/MHO98_ProgrammingGuide_EN.pdf)
-(autoset 3.2, acquisition 3.3, cursors 3.8, display 3.9, measurements 3.17,
-waveforms 3.28). Tests simulate these commands and response formats; this project
-has not hardware-verified MHO900/MHO98 on either LAN or USB.
-
-### Model capabilities and channel selection
-
-The server looks up the model field from `*IDN?` in the packaged
-[`models.toml`](src/rigol_mcp/models.toml) capability catalog. Python loads and
-validates this catalog once; it ships with the tool and is versioned with the code.
-To add a model, add its exact uppercase name, family, and positive integer
-`analog_channel_count` to `[models]`, with a manufacturer source below. Optional
-`[aliases]` entries must point directly to canonical model names. A new family still
-needs a driver for dialect-dependent tools.
-
-State reads query only that model's analog channels. Channel operations reject
-unavailable inputs before sending channel commands, including before enabling either
-source of a two-channel measurement. The `idn` diagnostic reports the model and its
-available analog channels. Identification is cached for the connection and reset on
-disconnect or retry cleanup.
-
-Tool schemas list the union of known channel names without contacting the scope;
-runtime validation checks the connected model. Unknown models are rejected rather
-than assigned a channel count from their model-number digits. Model names are
-case-insensitive, with only explicitly listed spelling aliases accepted.
-
-The following channel counts come from Rigol's published model tables. They describe
-analog inputs; digital inputs and signal-generator outputs are separate. A capability
-entry does **not** establish full SCPI compatibility or hardware verification.
-DS2000A/MSO2000A entries provide channel information only: those families still need
-a dedicated dialect driver for driver-dependent tools such as measurements, waveforms,
-screenshots, and acquisition exports.
-
-| Models | Analog channels | Manufacturer source |
-|---|---:|---|
-| DS1054Z, DS1074Z, DS1074Z-S, DS1104Z, DS1104Z-S | 4 | [Rigol catalog, p.18](https://assets.tequipment.net/assets/1/26/Rigol_-_Test___Measurement_Catalog.pdf) |
-| MSO1074Z, MSO1074Z-S, MSO1104Z, MSO1104Z-S | 4 | [DS1000Z programming guide, document overview](https://www.rigol.com/dam/global/downloads/brochures/en/program-guide/oscilloscopes/DS1000Z_ProgrammingGuide_EN.pdf) |
-| DS1074Z Plus, DS1074Z-S Plus, DS1104Z Plus, DS1104Z-S Plus | 4 | [DS1000Z datasheet](https://www.rigol.com/dam/global/downloads/brochures/en/data-sheet/oscilloscopes/DS1000Z_DataSheet_EN.pdf) |
-| DHO802, DHO812 | 2 | [DHO800 product table](https://www.rigolna.com/products/digital-oscilloscopes/dho800/) |
-| DHO804, DHO814, DHO824 | 4 | [DHO800 user guide, document overview](https://www.rigol.com/dam/global/downloads/brochures/zh/user-manual/oscillosopes/DHO800_UserGuide_CN.pdf) |
-| DHO914, DHO914S, DHO924, DHO924S | 4 | [DHO900 product table](https://www.rigolna.com/products/digital-oscilloscopes/dho900/) |
-| DHO1072, DHO1102, DHO1202 | 2 | [DHO1000/4000 programming guide, document overview](https://www.rigol.com/dam/global/downloads/brochures/en/program-guide/oscilloscopes/DHO10004000_ProgrammingGuide_EN.pdf) |
-| DHO1202U / DHO1204U | 2 / 4 | [DHO1000U user guide, p.10](https://download.rigol.com/en/Manual/Digital%20Oscilloscope/DHO1000/DHO1000U_UserGuide_EN.pdf) |
-| DHO1074, DHO1104, DHO1204, DHO4204, DHO4404, DHO4804 | 4 | [DHO1000/4000 programming guide, document overview](https://www.rigol.com/dam/global/downloads/brochures/en/program-guide/oscilloscopes/DHO10004000_ProgrammingGuide_EN.pdf) |
-| MHO934, MHO954, MHO984 | 4 | [MHO900 product overview and model list](https://www.rigol.com/intl/products/oscilloscope/MHO900.html) |
-| MHO98 special edition | 4 | [MHO98 datasheet, p.6](https://www.rigol.com/dam/global/downloads/brochures/en/data-sheet/oscilloscopes/MHO98-DataSheet.pdf) |
-| DS2072A, DS2102A, DS2202A, DS2302A, MSO2072A, MSO2102A, MSO2202A, MSO2302A; each also with `-S` | 2 | [Rigol MSO/DS2000A datasheet, p.1](https://www.batronix.com/pdf/Rigol/Datasheet/MSO2000A_DS2000A_Datasheet_EN.pdf) |
-
-Rigol's [DS1000Z product page](https://www.rigol.com/intl/products/oscilloscope/DS1000Z.html)
-also spells the four Plus models with `-Plus`; these are explicit aliases for the
-space-separated names above. Other suffixes are not inferred. The earlier README
-listed `MSO1054Z`, but it is omitted from this registry because the cited model tables
-do not substantiate it.
-
-Additional published models were reviewed on 2026-11-27. These products already
-have manufacturer documentation; the catalog does not contain speculative model
-names. DHO1000U uses the existing DHO driver because Rigol lists it on the
-[DHO1000 product page](https://www.rigol.com/intl/products/oscilloscope/DHO1000.html)
-with the shared DHO1000/4000 programming guide. This mapping is not hardware-verified.
-
-The following newer families have **channel metadata only**, pending dialect
-validation and driver implementation. A DHO or MHO prefix alone does not select
-the existing DHO driver. Digital inputs, external trigger inputs, and generator
-outputs are excluded from the analog channel counts.
-
-| Models | Analog channels | Manufacturer source |
-|---|---:|---|
-| MHO2024, MHO2034 | 4 | [MHO2000 programming guide, p.2](https://download.rigol.com/en/Manual/Digital%20Oscilloscope/MHO2000/MHO2000_Programming%20Guide_EN.pdf) |
-| DHO5054, DHO5104 | 4 | [MHO/DHO5000 datasheet, p.9](https://www.rigol.com/dam/global/downloads/brochures/en/data-sheet/oscilloscopes/MHODHO5000_DataSheet.pdf) |
-| DHO5058, DHO5108 | 8 | [MHO/DHO5000 datasheet, p.9](https://www.rigol.com/dam/global/downloads/brochures/en/data-sheet/oscilloscopes/MHODHO5000_DataSheet.pdf) |
-| MHO5054, MHO5104 | 4 | [MHO/DHO5000 datasheet, p.9](https://www.rigol.com/dam/global/downloads/brochures/en/data-sheet/oscilloscopes/MHODHO5000_DataSheet.pdf) |
-| MHO5056, MHO5106 | 6 | [MHO/DHO5000 datasheet, p.9](https://www.rigol.com/dam/global/downloads/brochures/en/data-sheet/oscilloscopes/MHODHO5000_DataSheet.pdf) |
-| DS9202, MSO9402 | 2 | [MSO/DS9000 user guide, p.11](https://www.rigol.com/dam/global/downloads/brochures/en/user-manual/oscillosopes/MSODS9000_UserGuide_EN.pdf) |
-| DS9204, DS9404, DS9604 | 4 | [MSO/DS9000 user guide, p.11](https://www.rigol.com/dam/global/downloads/brochures/en/user-manual/oscillosopes/MSODS9000_UserGuide_EN.pdf) |
-
-Tool schemas consequently advertise CHAN1–CHAN8. Runtime checks still restrict
-each call to the connected model's documented inputs; advertising CHAN8 does not
-imply an eight-channel SCPI driver is implemented.
+Only catalogued model names are recognized. Model/channel information alone does
+not enable measurements, waveforms, or other tools that require a SCPI driver.
+See [hardware support and validation](docs/hardware-support.md) for the exact model
+list, manufacturer sources, hardware test reports, and coverage limits.
 
 The scope connects either over your **local network via Ethernet** (rear panel RJ45) or over **USB** (rear panel USB-B device port). LAN is the default; USB is used when `RIGOL_USB` is set (see [Configuration](#configuration)). USB transport has been validated on DS1000Z; DHO support has so far been validated over LAN only.
 
@@ -154,7 +34,7 @@ The scope connects either over your **local network via Ethernet** (rear panel R
 
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/)
-- A registered Rigol DS1000Z, DHO, or MHO900/MHO98 scope connected to your computer (see hardware validation status above)
+- A registered Rigol DS1000Z, DHO, or MHO900/MHO98 scope connected to your computer (see [hardware validation status](docs/hardware-support.md#recorded-hardware-reports))
 - For LAN: SCPI over TCP/IP enabled on the scope (on by default)
 - For USB: a VISA driver on the scope's USB interface — either the native USBTMC driver
   (e.g. from Rigol UltraSigma / any NI-VISA runtime) or WinUSB via Zadig
