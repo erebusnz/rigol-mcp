@@ -1,12 +1,12 @@
-# Documented hardware catalog shipped with rigol-mcp.
-# Model names and aliases are exact; manufacturer sources are linked in README.md.
+# Hardware catalog shipped with rigol-mcp.
+# Model names and aliases are exact; manufacturer sources are linked in docs/hardware-support.md.
 # A family entry does not imply that a SCPI dialect driver is implemented.
 # Validation status reviewed 2026-11-27:
-# - Channel counts are documentation-backed for all entries.
+# - Channel-count sources and legacy exact-model citation gaps are recorded in that document.
 # - Hardware-unverified means no upstream live validation is recorded for that exact model.
 # - Hardware-tested covers exercised paths on the stated transport, not all SCPI functions.
 # - Usage, connection-only, and external-fork reports are qualified separately below.
-# - Historical reports do not validate the current revision; sources/coverage are in README.md.
+# - Historical reports do not validate the current revision; sources/coverage are in docs/hardware-support.md.
 
 [models]
 
@@ -41,7 +41,7 @@
 "DHO802" = { family = "DHO", analog_channel_count = 2 }
 "DHO804" = { family = "DHO", analog_channel_count = 4 } # Contributor usage report: PR #7 HTTP deployment; scope transport/test coverage unspecified.
 "DHO812" = { family = "DHO", analog_channel_count = 2 }
-"DHO814" = { family = "DHO", analog_channel_count = 4 } # External fork hardware report: LAN, FW 00.01.05; upstream unverified. See README.
+"DHO814" = { family = "DHO", analog_channel_count = 4 } # External fork hardware report: LAN, FW 00.01.05; upstream unverified. See docs/hardware-support.md.
 "DHO824" = { family = "DHO", analog_channel_count = 4 }
 "DHO914" = { family = "DHO", analog_channel_count = 4 }
 "DHO914S" = { family = "DHO", analog_channel_count = 4 }
@@ -70,7 +70,7 @@
 # All newer families below are hardware-unverified.
 # They provide channel metadata only; no SCPI driver is registered.
 # Keep DHO5000 separate from DHO until its dialect has been validated.
-# Manufacturer model tables and review date are recorded in README.md.
+# Manufacturer model tables and review date are recorded in docs/hardware-support.md.
 
 # MHO900 / MHO98 (the special-edition MHO98 also has four analog channels)
 "MHO934" = { family = "MHO900", analog_channel_count = 4 }
