@@ -197,6 +197,10 @@ For **USB**, replace the `RIGOL_IP` entry in `env` with `"RIGOL_USB": "1"` (see 
 
 ### Running over HTTP
 
+See [Remote operation](docs/remote-operation.md) for the complete server setup,
+switching Codex or Claude Code from stdio to HTTP, direct token configuration,
+verification, and troubleshooting.
+
 By default the server speaks MCP over stdio and is started by the MCP client. It can also run
 as a long-lived service, for example on a small lab computer next to the scope, serving
 **streamable HTTP** at `/mcp`:
@@ -206,6 +210,14 @@ export RIGOL_IP=192.168.1.123
 export RIGOL_MCP_TOKEN="$(openssl rand -hex 32)"
 uv run rigol-mcp --transport http --host 0.0.0.0 --port 8000
 ```
+
+Setting `RIGOL_MCP_HOST`, `RIGOL_MCP_PORT`, and `RIGOL_MCP_TOKEN` in `.env`
+configures the server; it does not switch a client to HTTP. Start the server with
+`--transport http` (or `RIGOL_MCP_TRANSPORT=http`), then configure the client with
+`http://<server-host>:8000/mcp` and the matching bearer token in its HTTP headers.
+The token can be stored directly in the client's private configuration; no client
+environment variable is required. See the guide for exact Codex and Claude Code
+examples.
 
 | Variable | Flag | Default | Description |
 |---|---|---|---|
@@ -394,13 +406,13 @@ is retained separately from the manifest error. Sample/time subranges, CSV, and 
 ## Architecture
 
 ```
-Claude / MCP client
-        │  MCP protocol (stdio)
+Codex / Claude / MCP client
+        │  MCP protocol (stdio or streamable HTTP)
 rigol_mcp.server      ← tool definitions, request routing
         │  Python function calls
 rigol_mcp.scope       ← VISA connection, SCPI command helpers
         │  SCPI over TCP/IP (port 5555) or USBTMC
-Rigol DS1000Z         ← 192.168.1.123  /  USB
+Rigol oscilloscope    ← 192.168.1.123  /  USB
 ```
 
 The VISA connection is cached across tool calls (one connection per server session) and reconnects automatically on communication errors.
