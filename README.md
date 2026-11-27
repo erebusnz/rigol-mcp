@@ -1,6 +1,6 @@
 # rigol-mcp
 
-MCP server for controlling **Rigol DS1000Z and DHO series oscilloscopes** over LAN or USB. Exposes the scope as a set of tools that Claude (or any MCP client) can call to take measurements, configure the instrument, and capture screenshots — entirely through natural language.
+MCP server for controlling **Rigol DS1000Z, DHO, and MHO900/MHO98 oscilloscopes** over LAN or USB. Exposes the scope as a set of tools that Claude (or any MCP client) can call to take measurements, configure the instrument, and capture screenshots — entirely through natural language.
 
 ![Scope](media/example.png)
 
@@ -31,6 +31,29 @@ Unknown signal (square wave into LCR trap), wrong channel enabled, invalid timeb
 | DHO924S | 4 analog + signal gen | 250 MHz |
 
 Other registered DHO models (DHO800/900/1000/1000U/4000 families) use the same driver but are not hardware-verified. Newer DHO5000 models have channel metadata only and do not select this driver.
+
+**Rigol MHO900 / MHO98 (documentation-backed, tested offline):**
+
+The exact models **MHO934, MHO954, MHO984, and MHO98** select the `MHO900` driver.
+All have four analog inputs. The driver shares DHO-style SCPI code for measurements,
+two-source delay/phase measurements, ASCII screen waveforms, PNG screenshots, autoset,
+and cursor positions in seconds. Acquisition information also reports sample rate,
+memory depth setting, acquisition type, and averages. RAW acquisition-memory export,
+digital waveform inputs, and the signal generator are not implemented for these models.
+MHO2000 and MHO5000 remain catalog-only families.
+
+For scale/offset changes, the channel must be displayed or the same `set_channel`
+call must include `display=true`. Combining those changes with `display=false` is
+rejected before any writes; hide the channel in a subsequent call. This avoids a
+[reported MHO98 firmware behavior](https://github.com/zinntikumugai/rigol-oscilloscope-mcp/blob/main/docs/verification/mho98-mvp.md)
+that silently ignores vertical settings on hidden channels.
+
+The command mapping follows Rigol's
+[MHO900 programming guide](https://cdn-aorpci9.actonsoftware.com/acton/cdna/1579/f-cc3e78b8-87a1-4629-a97e-3ea99bf0470c/1/2/MHO900%20ProgrammingGuide.pdf)
+and [MHO98 programming guide](https://cdn-aorpci9.actonsoftware.com/acton/cdna/1579/f-f9e0b843-d3f6-486f-ab64-1b688af67a0f/1/1/MHO98_ProgrammingGuide_EN.pdf)
+(autoset 3.2, acquisition 3.3, cursors 3.8, display 3.9, measurements 3.17,
+waveforms 3.28). Tests simulate these commands and response formats; this project
+has not hardware-verified MHO900/MHO98 on either LAN or USB.
 
 ### Model capabilities and channel selection
 
@@ -71,6 +94,8 @@ screenshots, and acquisition exports.
 | DHO1072, DHO1102, DHO1202 | 2 | [DHO1000/4000 programming guide, document overview](https://www.rigol.com/dam/global/downloads/brochures/en/program-guide/oscilloscopes/DHO10004000_ProgrammingGuide_EN.pdf) |
 | DHO1202U / DHO1204U | 2 / 4 | [DHO1000U user guide, p.10](https://download.rigol.com/en/Manual/Digital%20Oscilloscope/DHO1000/DHO1000U_UserGuide_EN.pdf) |
 | DHO1074, DHO1104, DHO1204, DHO4204, DHO4404, DHO4804 | 4 | [DHO1000/4000 programming guide, document overview](https://www.rigol.com/dam/global/downloads/brochures/en/program-guide/oscilloscopes/DHO10004000_ProgrammingGuide_EN.pdf) |
+| MHO934, MHO954, MHO984 | 4 | [MHO900 product overview and model list](https://www.rigol.com/intl/products/oscilloscope/MHO900.html) |
+| MHO98 special edition | 4 | [MHO98 datasheet, p.6](https://www.rigol.com/dam/global/downloads/brochures/en/data-sheet/oscilloscopes/MHO98-DataSheet.pdf) |
 | DS2072A, DS2102A, DS2202A, DS2302A, MSO2072A, MSO2102A, MSO2202A, MSO2302A; each also with `-S` | 2 | [Rigol MSO/DS2000A datasheet, p.1](https://www.batronix.com/pdf/Rigol/Datasheet/MSO2000A_DS2000A_Datasheet_EN.pdf) |
 
 Rigol's [DS1000Z product page](https://www.rigol.com/intl/products/oscilloscope/DS1000Z.html)
@@ -92,8 +117,6 @@ outputs are excluded from the analog channel counts.
 
 | Models | Analog channels | Manufacturer source |
 |---|---:|---|
-| MHO934, MHO954, MHO984 | 4 | [MHO900 product overview and model list](https://www.rigol.com/intl/products/oscilloscope/MHO900.html) |
-| MHO98 special edition | 4 | [MHO98 datasheet, p.6](https://www.rigol.com/dam/global/downloads/brochures/en/data-sheet/oscilloscopes/MHO98-DataSheet.pdf) |
 | MHO2024, MHO2034 | 4 | [MHO2000 programming guide, p.2](https://download.rigol.com/en/Manual/Digital%20Oscilloscope/MHO2000/MHO2000_Programming%20Guide_EN.pdf) |
 | DHO5054, DHO5104 | 4 | [MHO/DHO5000 datasheet, p.9](https://www.rigol.com/dam/global/downloads/brochures/en/data-sheet/oscilloscopes/MHODHO5000_DataSheet.pdf) |
 | DHO5058, DHO5108 | 8 | [MHO/DHO5000 datasheet, p.9](https://www.rigol.com/dam/global/downloads/brochures/en/data-sheet/oscilloscopes/MHODHO5000_DataSheet.pdf) |
@@ -112,7 +135,7 @@ The scope connects either over your **local network via Ethernet** (rear panel R
 
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/)
-- A Rigol DS1000Z (LAN or USB) or DHO series scope (LAN) connected to your computer
+- A registered Rigol DS1000Z, DHO, or MHO900/MHO98 scope connected to your computer (see hardware validation status above)
 - For LAN: SCPI over TCP/IP enabled on the scope (on by default)
 - For USB: a VISA driver on the scope's USB interface — either the native USBTMC driver
   (e.g. from Rigol UltraSigma / any NI-VISA runtime) or WinUSB via Zadig

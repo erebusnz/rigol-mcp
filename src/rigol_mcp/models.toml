@@ -64,16 +64,18 @@
 "MSO2302A-S" = { family = "DS2000A", analog_channel_count = 2 }
 
 # All newer families below are hardware-unverified.
-# They provide channel metadata only; no SCPI driver is registered.
 # Keep DHO5000 separate from DHO until its dialect has been validated.
 # Manufacturer model tables and review date are recorded in README.md.
 
 # MHO900 / MHO98 (the special-edition MHO98 also has four analog channels)
+# Shared SCPI driver: analog operations and screen waveforms; tested offline only.
+# RAW memory export and digital waveform inputs are not implemented.
 "MHO934" = { family = "MHO900", analog_channel_count = 4 }
 "MHO954" = { family = "MHO900", analog_channel_count = 4 }
 "MHO984" = { family = "MHO900", analog_channel_count = 4 }
 "MHO98" = { family = "MHO900", analog_channel_count = 4 }
 
+# Remaining families: channel metadata only; no SCPI driver registered.
 # MHO2000
 "MHO2024" = { family = "MHO2000", analog_channel_count = 4 }
 "MHO2034" = { family = "MHO2000", analog_channel_count = 4 }

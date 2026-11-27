@@ -713,6 +713,16 @@ def set_channel(
     PROB change to multiply it and land at the wrong V/div.
     """
     ch = validate_analog_channel(scope, channel)
+    # Catalog-only models retain generic channel configuration. Registered dialects
+    # can reject a request before any writes when firmware has additional prerequisites.
+    try:
+        driver = get_driver(scope)
+    except RuntimeError:
+        driver = None
+    if driver is not None:
+        driver.validate_channel_configuration(
+            scope, ch, display=display, vertical=scale is not None or offset is not None,
+        )
     if display is not None:
         scope.write(f":{ch}:DISP {'ON' if display else 'OFF'}")
     if probe is not None:
