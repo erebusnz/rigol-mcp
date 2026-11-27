@@ -131,6 +131,8 @@ RIGOL_IP=192.168.1.123
 | `RIGOL_IP` | (required for LAN) | Scope IP address |
 | `RIGOL_USB` | (unset) | Set to `1` to connect over USB instead of LAN. The first Rigol USB scope is found automatically. |
 | `RIGOL_USB_SERIAL` | (unset) | When several Rigol scopes are on USB, pin a specific one by serial number. |
+| `RIGOL_USB_RESOURCE` | (unset) | Full Rigol USB VISA instrument address. With `RIGOL_USB=1`, disables device discovery and overrides `RIGOL_USB_SERIAL`. |
+| `RIGOL_USB_SKIP_CLEAR` | (unset) | Set to `1` to skip VISA device clear during USB connection setup and retry cleanup if that operation hangs. |
 | `RIGOL_ENABLE_SEND_RAW` | (unset) | Set to `1` to enable the `send_raw` tool (arbitrary SCPI). Off by default — see [Tools](#tools). |
 | `RIGOL_SCREENSHOT_DIR` | `screenshots/` | Directory for saved PNG screenshots |
 | `RIGOL_WAVEFORM_DIR` | `waveforms/` | Parent directory for full acquisition exports |
@@ -145,6 +147,29 @@ on USB (vendor ID `0x1AB1`) and connects to it. If more than one scope is connec
 RIGOL_USB=1
 # RIGOL_USB_SERIAL=DS1ZA000000000   # only needed if more than one scope is on USB
 ```
+
+To connect directly, copy the scope's full USB VISA instrument address from your
+VISA test panel into `RIGOL_USB_RESOURCE`:
+
+```
+RIGOL_USB=1
+RIGOL_USB_RESOURCE=USB0::0x1AB1::0x04CE::DS1ZA000000000::INSTR
+```
+
+Replace the example with your scope's actual address. A nonempty address bypasses
+VISA resource discovery on every connection and reconnect. Backend selection stays
+automatic, but each backend only attempts that address; a failed open never falls
+back to discovering another scope. `RIGOL_USB_SERIAL` is ignored in this mode.
+Leave `RIGOL_USB_RESOURCE` unset or blank to use automatic discovery. It has no
+effect on LAN connections.
+
+If the scope hangs during VISA device clear, set `RIGOL_USB_SKIP_CLEAR=1` alongside
+`RIGOL_USB=1`. This skips the server's device-clear calls when opening a USB session
+and cleaning up a failed session before reconnecting. It works with either automatic
+discovery or a direct address. Sessions are still closed during cleanup, and the
+SCPI `*CLS` command is still sent when connecting. The `idn` diagnostic reports
+whether skipping device clear is enabled. Leave the setting unset, blank, or set to
+`0`, `false`, `no`, or `off` for the usual clear behavior. LAN connections ignore it.
 
 #### Windows USB instructions
 

@@ -137,6 +137,82 @@ async def test_call_retries_then_succeeds():
     assert len(invalidated) == 2          # reconnected before each of the 2 retries
 
 
+@pytest.mark.parametrize("direct", [False, True])
+@pytest.mark.parametrize("exc_factory", [_tmo, lambda: OSError("USB temporarily unavailable")])
+async def test_call_retries_usb_open_failure(monkeypatch, direct, exc_factory):
+    from rigol_mcp import scope as sc
+    from tests.conftest import FakeResourceManager, FakeScope
+
+    resource = "USB0::0x1AB1::0x04CE::DS1ZA1::INSTR"
+    monkeypatch.setenv("RIGOL_USB", "1")
+    if direct:
+        monkeypatch.setenv("RIGOL_USB_RESOURCE", resource)
+    opened = []
+    managers = []
+    scope = FakeScope(resource_name=resource)
+
+    def open_scope(name):
+        opened.append(name)
+        if len(opened) == 1:
+            raise exc_factory()
+        return scope
+
+    class Manager(FakeResourceManager):
+        def list_resources(self):
+            assert not direct, "Direct addressing must also bypass discovery during retries"
+            return super().list_resources()
+
+    def manager(backend):
+        if backend == "@ivi":
+            raise OSError("NI-VISA not installed")
+        rm = Manager(resources=(resource,), scope_factory=open_scope)
+        managers.append(rm)
+        return rm
+
+    monkeypatch.setattr(sc.pyvisa, "ResourceManager", manager)
+    monkeypatch.setattr(srv, "get_scope", sc.get_scope)
+    monkeypatch.setattr(srv, "invalidate_scope", sc.invalidate_scope)
+    assert await srv._call(sc.idn) == FakeScope.DEFAULT_IDN
+    assert opened == [resource, resource]
+    assert managers[0].closed
+    assert sc.active_backend() == "@py"
+
+
+async def test_call_recovers_usb_query_failure_without_device_clear(monkeypatch):
+    from rigol_mcp import scope as sc
+    from tests.conftest import FakeResourceManager, FakeScope
+
+    resource = "USB0::0x1AB1::0x04CE::DS1ZA1::INSTR"
+    monkeypatch.setenv("RIGOL_USB", "1")
+    monkeypatch.setenv("RIGOL_USB_RESOURCE", resource)
+    monkeypatch.setenv("RIGOL_USB_SKIP_CLEAR", "1")
+    opened = []
+
+    class Scope(FakeScope):
+        def clear(self):
+            pytest.fail("Device clear must not run during USB setup or retry cleanup")
+
+        def query(self, command):
+            if self is opened[0]:
+                raise _tmo()
+            return super().query(command)
+
+    def open_scope(name):
+        scope = Scope(resource_name=name)
+        opened.append(scope)
+        return scope
+
+    rm = FakeResourceManager(scope_factory=open_scope)
+    monkeypatch.setattr(sc.pyvisa, "ResourceManager", lambda backend: rm)
+    monkeypatch.setattr(srv, "get_scope", sc.get_scope)
+    monkeypatch.setattr(srv, "invalidate_scope", sc.invalidate_scope)
+    assert await srv._call(sc.idn) == FakeScope.DEFAULT_IDN
+    assert len(opened) == 2 and opened[0].closed and not opened[1].closed
+    assert all(scope.written == ["*CLS"] for scope in opened)
+    sc.disconnect_scope()
+    assert opened[1].closed and rm.closed
+
+
 async def test_call_exhausts_attempts_then_raises():
     calls = {"n": 0}
 

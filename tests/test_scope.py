@@ -145,6 +145,110 @@ def test_open_usb_falls_back_to_ivi(monkeypatch):
     assert sc.active_backend() == "@ivi"
 
 
+class DirectResourceManager(FakeResourceManager):
+    def list_resources(self):
+        pytest.fail("Direct addressing must never enumerate VISA resources")
+
+
+@pytest.mark.parametrize("resource", [
+    "USB0::0x1AB1::0x04CE::DS1ZA1::INSTR",
+    "USB0::6833::1230::DS1ZA1::0::INSTR",
+    "USB::0x1AB1::0x04CE::DS1ZA1::INSTR",
+])
+def test_direct_usb_skips_discovery_on_open_and_reconnect(monkeypatch, resource):
+    monkeypatch.setenv("RIGOL_USB", "1")
+    monkeypatch.setenv("RIGOL_USB_RESOURCE", f" {resource} ")
+    monkeypatch.setenv("RIGOL_USB_SERIAL", "ignored")
+    opened = []
+
+    def open_scope(name):
+        scope = FakeScope(resource_name=name)
+        opened.append(scope)
+        return scope
+
+    rm = DirectResourceManager(scope_factory=open_scope)
+    _patch_rms(monkeypatch, {"@py": rm})
+    first = sc.get_scope()
+    assert sc.get_scope() is first
+    assert first.cleared == 1 and first.written == ["*CLS"]
+    info = sc.connection_info()
+    assert info["RIGOL_USB_RESOURCE"] == resource
+    assert info["RIGOL_USB_SERIAL"] == "(ignored with explicit resource)"
+    sc.invalidate_scope()
+    second = sc.get_scope()
+    assert first.closed and second is not first
+    assert [scope.resource_name for scope in opened] == [resource, resource]
+
+
+def test_direct_usb_tries_other_backend_without_discovery(monkeypatch):
+    resource = "USB0::0x1AB1::0x04CE::DS1ZA1::INSTR"
+    monkeypatch.setenv("RIGOL_USB_RESOURCE", resource)
+    attempts = []
+
+    def unavailable(name):
+        attempts.append(name)
+        raise ValueError("No device found")
+
+    winusb = DirectResourceManager(scope_factory=unavailable)
+    ivi = DirectResourceManager()
+    _patch_rms(monkeypatch, {"@py": winusb, "@ivi": ivi})
+    rm, scope = sc._open_usb_scope()
+    assert winusb.closed and rm is ivi
+    assert scope.resource_name == resource and sc.active_backend() == "@ivi"
+    assert sc._open_usb_scope()[0] is ivi  # working backend is tried first next time
+    assert attempts == [resource]
+
+
+def test_direct_usb_open_failure_never_falls_back_to_discovery(monkeypatch):
+    resource = "USB0::0x1AB1::0x04CE::DS1ZA1::INSTR"
+    monkeypatch.setenv("RIGOL_USB_RESOURCE", resource)
+    attempts = []
+
+    def unavailable(name):
+        attempts.append(name)
+        raise ValueError("No device found")
+
+    mapping = {backend: DirectResourceManager(scope_factory=unavailable)
+               for backend in ("@py", "@ivi")}
+    _patch_rms(monkeypatch, mapping)
+    with pytest.raises(RuntimeError) as exc:
+        sc._open_usb_scope()
+    assert attempts == [resource, resource]
+    assert all(rm.closed for rm in mapping.values())
+    assert sc.active_backend() is None
+    assert all(f"{backend}: could not open {resource}" in str(exc.value) for backend in mapping)
+
+
+@pytest.mark.parametrize("resource", [
+    "USB0::0x0699::0x0368::TEK1::INSTR",
+    "USB0::0x1AB1::0x04CE::DS1ZA1::RAW",
+    "TCPIP0::192.168.1.50::5555::SOCKET",
+    "not a VISA address",
+    "USB0::invalid::0x04CE::DS1ZA1::INSTR",
+    "USB0::0x1AB1::INSTR",
+])
+def test_direct_usb_rejects_invalid_address_before_visa_io(monkeypatch, resource):
+    monkeypatch.setenv("RIGOL_USB", "1")
+    monkeypatch.setenv("RIGOL_USB_RESOURCE", resource)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Invalid direct addresses must fail before creating a VISA manager")
+
+    monkeypatch.setattr(sc.pyvisa, "ResourceManager", forbidden)
+    with pytest.raises(RuntimeError, match="RIGOL_USB_RESOURCE must be"):
+        sc.get_scope()
+    assert sc.connection_info()["RIGOL_USB_RESOURCE"] == resource
+
+
+@pytest.mark.parametrize("resource", ["", "  "])
+def test_blank_direct_usb_address_keeps_discovery(monkeypatch, resource):
+    monkeypatch.setenv("RIGOL_USB_RESOURCE", resource)
+    monkeypatch.setenv("RIGOL_USB_SERIAL", "DS1ZA2")
+    resources = ("USB0::6833::1230::DS1ZA1::0::INSTR", "USB0::6833::1230::DS1ZA2::0::INSTR")
+    _patch_rms(monkeypatch, {"@py": FakeResourceManager(resources)})
+    assert sc._open_usb_scope()[1].resource_name == resources[1]
+
+
 def test_open_usb_none_found_raises_with_guidance(monkeypatch):
     mapping = {"@py": FakeResourceManager(()), "@ivi": FakeResourceManager(())}
     _patch_rms(monkeypatch, mapping)
@@ -182,6 +286,14 @@ def test_get_scope_lan_configures_session(monkeypatch):
     assert sc.get_scope() is fake
 
 
+def test_direct_usb_address_does_not_change_lan_transport(monkeypatch):
+    monkeypatch.setenv("RIGOL_USB_RESOURCE", "not a valid USB address")
+    monkeypatch.setenv("RIGOL_IP", "10.0.0.9")
+    _patch_rms(monkeypatch, {"@py": DirectResourceManager()})
+    assert sc.get_scope().resource_name == "TCPIP0::10.0.0.9::5555::SOCKET"
+    assert sc.connection_info()["transport"] == "LAN"
+
+
 def test_get_scope_usb_uses_usb_timeout(monkeypatch):
     monkeypatch.setenv("RIGOL_USB", "1")
     ivi_scope = FakeScope(resource_name="USB0::0x1AB1::0x04CE::DS1ZA1::INSTR")
@@ -194,6 +306,51 @@ def test_get_scope_usb_uses_usb_timeout(monkeypatch):
     assert s is ivi_scope
     assert s.timeout == sc._USB_TIMEOUT_MS
     assert sc.active_backend() == "@ivi"
+
+
+@pytest.mark.parametrize("direct", [False, True])
+@pytest.mark.parametrize("value,skip_clear", [
+    (None, False), ("", False), ("  ", False), ("0", False), (" FALSE ", False),
+    ("no", False), ("off", False), ("1", True), (" true ", True), ("yes", True), ("on", True),
+])
+def test_usb_clear_setting_applies_on_open_cleanup_and_reconnect(monkeypatch, direct, value, skip_clear):
+    resource = "USB0::0x1AB1::0x04CE::DS1ZA1::INSTR"
+    monkeypatch.setenv("RIGOL_USB", "1")
+    if value is not None:
+        monkeypatch.setenv("RIGOL_USB_SKIP_CLEAR", value)
+    if direct:
+        monkeypatch.setenv("RIGOL_USB_RESOURCE", resource)
+    rm_type = DirectResourceManager if direct else FakeResourceManager
+    rm = rm_type(resources=(resource,), scope_factory=lambda name: FakeScope(resource_name=name))
+    _patch_rms(monkeypatch, {"@py": rm})
+
+    first = sc.get_scope()
+    expected_clears = 0 if skip_clear else 1
+    assert first.cleared == expected_clears
+    assert first.written == ["*CLS"]
+    assert sc.connection_info()["RIGOL_USB_SKIP_CLEAR"] is skip_clear
+    sc._driver = drivers.DS1000Z
+    sc.invalidate_scope()
+    assert first.closed and first.cleared == 2 * expected_clears
+    assert sc._scope is None and sc._driver is None
+
+    second = sc.get_scope()
+    assert second is not first and second.cleared == expected_clears
+    assert second.written == ["*CLS"]
+
+
+@pytest.mark.parametrize("usb", [None, "0"])
+def test_usb_skip_clear_does_not_change_lan_cleanup(monkeypatch, usb):
+    monkeypatch.setenv("RIGOL_IP", "10.0.0.9")
+    monkeypatch.setenv("RIGOL_USB_SKIP_CLEAR", "1")
+    if usb is not None:
+        monkeypatch.setenv("RIGOL_USB", usb)
+    _patch_rms(monkeypatch, {"@py": FakeResourceManager()})
+    scope = sc.get_scope()
+    assert scope.cleared == 1
+    assert scope.written == ["*CLS"]
+    sc.invalidate_scope()
+    assert scope.cleared == 2 and scope.closed
 
 
 def test_get_scope_clear_unsupported_is_tolerated(monkeypatch):
