@@ -3,13 +3,15 @@
 # A family entry does not imply that a SCPI dialect driver is implemented.
 # Validation status reviewed 2026-11-27:
 # - Channel counts are documentation-backed for all entries.
-# - Hardware-unverified means no live validation is recorded for that exact model.
+# - Hardware-unverified means no upstream live validation is recorded for that exact model.
 # - Hardware-tested covers exercised paths on the stated transport, not all SCPI functions.
+# - Usage, connection-only, and external-fork reports are qualified separately below.
+# - Historical reports do not validate the current revision; sources/coverage are in README.md.
 
 [models]
 
-# DS1000Z: existing driver; hardware-unverified except DS1104Z below.
-"DS1054Z" = { family = "DS1000Z", analog_channel_count = 4 }
+# DS1000Z: existing driver; hardware-unverified except annotated models below.
+"DS1054Z" = { family = "DS1000Z", analog_channel_count = 4 } # Hardware-tested: USB/WinUSB/pyvisa-py, PR #1 (2026-06-08).
 "DS1074Z" = { family = "DS1000Z", analog_channel_count = 4 }
 "DS1074Z PLUS" = { family = "DS1000Z", analog_channel_count = 4 }
 "DS1074Z-S" = { family = "DS1000Z", analog_channel_count = 4 }
@@ -23,7 +25,8 @@
 "MSO1104Z" = { family = "DS1000Z", analog_channel_count = 4 }
 "MSO1104Z-S" = { family = "DS1000Z", analog_channel_count = 4 }
 
-# DHO: existing driver; hardware-unverified except DHO924S below.
+# DHO: existing driver; hardware reports and their limits are annotated below.
+# Unannotated models are hardware-unverified.
 "DHO1072" = { family = "DHO", analog_channel_count = 2 }
 "DHO1074" = { family = "DHO", analog_channel_count = 4 }
 "DHO1102" = { family = "DHO", analog_channel_count = 2 }
@@ -36,21 +39,22 @@
 "DHO4404" = { family = "DHO", analog_channel_count = 4 }
 "DHO4804" = { family = "DHO", analog_channel_count = 4 }
 "DHO802" = { family = "DHO", analog_channel_count = 2 }
-"DHO804" = { family = "DHO", analog_channel_count = 4 }
+"DHO804" = { family = "DHO", analog_channel_count = 4 } # Contributor usage report: PR #7 HTTP deployment; scope transport/test coverage unspecified.
 "DHO812" = { family = "DHO", analog_channel_count = 2 }
-"DHO814" = { family = "DHO", analog_channel_count = 4 }
+"DHO814" = { family = "DHO", analog_channel_count = 4 } # External fork hardware report: LAN, FW 00.01.05; upstream unverified. See README.
 "DHO824" = { family = "DHO", analog_channel_count = 4 }
 "DHO914" = { family = "DHO", analog_channel_count = 4 }
 "DHO914S" = { family = "DHO", analog_channel_count = 4 }
 "DHO924" = { family = "DHO", analog_channel_count = 4 }
-"DHO924S" = { family = "DHO", analog_channel_count = 4 } # LAN validation reported in README; USB unverified.
+"DHO924S" = { family = "DHO", analog_channel_count = 4 } # Contributor hardware-tested: LAN, FW 00.01.05, PR #1; USB unverified.
 
-# DS2000A: hardware-unverified; channel metadata only, no SCPI driver.
+# DS2000A: channel metadata only, no SCPI driver; hardware-unverified except
+# the limited connection report for DS2202A below.
 "DS2072A" = { family = "DS2000A", analog_channel_count = 2 }
 "DS2072A-S" = { family = "DS2000A", analog_channel_count = 2 }
 "DS2102A" = { family = "DS2000A", analog_channel_count = 2 }
 "DS2102A-S" = { family = "DS2000A", analog_channel_count = 2 }
-"DS2202A" = { family = "DS2000A", analog_channel_count = 2 }
+"DS2202A" = { family = "DS2000A", analog_channel_count = 2 } # Connection-only report: USB/NI-VISA IDN/reconnect, before PR #5 retry revisions; no dialect validation.
 "DS2202A-S" = { family = "DS2000A", analog_channel_count = 2 }
 "DS2302A" = { family = "DS2000A", analog_channel_count = 2 }
 "DS2302A-S" = { family = "DS2000A", analog_channel_count = 2 }
