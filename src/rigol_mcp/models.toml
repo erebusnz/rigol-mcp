@@ -1,0 +1,66 @@
+# Documented hardware catalog shipped with rigol-mcp.
+# Model names and aliases are exact; manufacturer sources are linked in README.md.
+# A family entry does not imply that a SCPI dialect driver is implemented.
+
+[models]
+
+# DS1000Z
+"DS1054Z" = { family = "DS1000Z", analog_channel_count = 4 }
+"DS1074Z" = { family = "DS1000Z", analog_channel_count = 4 }
+"DS1074Z PLUS" = { family = "DS1000Z", analog_channel_count = 4 }
+"DS1074Z-S" = { family = "DS1000Z", analog_channel_count = 4 }
+"DS1074Z-S PLUS" = { family = "DS1000Z", analog_channel_count = 4 }
+"DS1104Z" = { family = "DS1000Z", analog_channel_count = 4 }
+"DS1104Z PLUS" = { family = "DS1000Z", analog_channel_count = 4 }
+"DS1104Z-S" = { family = "DS1000Z", analog_channel_count = 4 }
+"DS1104Z-S PLUS" = { family = "DS1000Z", analog_channel_count = 4 }
+"MSO1074Z" = { family = "DS1000Z", analog_channel_count = 4 }
+"MSO1074Z-S" = { family = "DS1000Z", analog_channel_count = 4 }
+"MSO1104Z" = { family = "DS1000Z", analog_channel_count = 4 }
+"MSO1104Z-S" = { family = "DS1000Z", analog_channel_count = 4 }
+
+# DHO
+"DHO1072" = { family = "DHO", analog_channel_count = 2 }
+"DHO1074" = { family = "DHO", analog_channel_count = 4 }
+"DHO1102" = { family = "DHO", analog_channel_count = 2 }
+"DHO1104" = { family = "DHO", analog_channel_count = 4 }
+"DHO1202" = { family = "DHO", analog_channel_count = 2 }
+"DHO1204" = { family = "DHO", analog_channel_count = 4 }
+"DHO4204" = { family = "DHO", analog_channel_count = 4 }
+"DHO4404" = { family = "DHO", analog_channel_count = 4 }
+"DHO4804" = { family = "DHO", analog_channel_count = 4 }
+"DHO802" = { family = "DHO", analog_channel_count = 2 }
+"DHO804" = { family = "DHO", analog_channel_count = 4 }
+"DHO812" = { family = "DHO", analog_channel_count = 2 }
+"DHO814" = { family = "DHO", analog_channel_count = 4 }
+"DHO824" = { family = "DHO", analog_channel_count = 4 }
+"DHO914" = { family = "DHO", analog_channel_count = 4 }
+"DHO914S" = { family = "DHO", analog_channel_count = 4 }
+"DHO924" = { family = "DHO", analog_channel_count = 4 }
+"DHO924S" = { family = "DHO", analog_channel_count = 4 }
+
+# DS2000A
+"DS2072A" = { family = "DS2000A", analog_channel_count = 2 }
+"DS2072A-S" = { family = "DS2000A", analog_channel_count = 2 }
+"DS2102A" = { family = "DS2000A", analog_channel_count = 2 }
+"DS2102A-S" = { family = "DS2000A", analog_channel_count = 2 }
+"DS2202A" = { family = "DS2000A", analog_channel_count = 2 }
+"DS2202A-S" = { family = "DS2000A", analog_channel_count = 2 }
+"DS2302A" = { family = "DS2000A", analog_channel_count = 2 }
+"DS2302A-S" = { family = "DS2000A", analog_channel_count = 2 }
+"MSO2072A" = { family = "DS2000A", analog_channel_count = 2 }
+"MSO2072A-S" = { family = "DS2000A", analog_channel_count = 2 }
+"MSO2102A" = { family = "DS2000A", analog_channel_count = 2 }
+"MSO2102A-S" = { family = "DS2000A", analog_channel_count = 2 }
+"MSO2202A" = { family = "DS2000A", analog_channel_count = 2 }
+"MSO2202A-S" = { family = "DS2000A", analog_channel_count = 2 }
+"MSO2302A" = { family = "DS2000A", analog_channel_count = 2 }
+"MSO2302A-S" = { family = "DS2000A", analog_channel_count = 2 }
+
+# Published Plus spelling variants. Targets must be canonical model names.
+[aliases]
+"DS1074Z-PLUS" = "DS1074Z PLUS"
+"DS1074Z-S-PLUS" = "DS1074Z-S PLUS"
+"DS1104Z-PLUS" = "DS1104Z PLUS"
+"DS1104Z-S-PLUS" = "DS1104Z-S PLUS"
+

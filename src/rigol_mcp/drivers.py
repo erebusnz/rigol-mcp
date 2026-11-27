@@ -7,7 +7,7 @@ is selected from ``*IDN?`` once per connection.
 
 To add support for a new Rigol family:
   1. Subclass :class:`ScopeDriver` below and override the attributes/methods that differ.
-  2. Register documented model capabilities in models.py with the driver's family name.
+  2. Register documented model capabilities in models.toml with the driver's family name.
   3. Add an instance to ``_DRIVERS`` (list more specific families before broader ones).
 Nothing in ``scope.py`` should need to change.
 

@@ -34,7 +34,14 @@ Other registered DHO models (DHO800/900/1000/4000 families) use the same driver 
 
 ### Model capabilities and channel selection
 
-The server looks up the model field from `*IDN?` in an explicit capability registry.
+The server looks up the model field from `*IDN?` in the packaged
+[`models.toml`](src/rigol_mcp/models.toml) capability catalog. Python loads and
+validates this catalog once; it ships with the tool and is versioned with the code.
+To add a model, add its exact uppercase name, family, and positive integer
+`analog_channel_count` to `[models]`, with a manufacturer source below. Optional
+`[aliases]` entries must point directly to canonical model names. A new family still
+needs a driver for dialect-dependent tools.
+
 State reads query only that model's analog channels. Channel operations reject
 unavailable inputs before sending channel commands, including before enabling either
 source of a two-channel measurement. The `idn` diagnostic reports the model and its
