@@ -6,6 +6,7 @@ import hmac
 import json
 import sys
 import os
+import ssl
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -816,6 +817,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--host", default=env.get("RIGOL_MCP_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(env.get("RIGOL_MCP_PORT", "8000")))
     parser.add_argument(
+        "--ssl-certfile",
+        default=env.get("RIGOL_MCP_SSL_CERTFILE") or None,
+        help="PEM certificate chain for HTTPS (requires --ssl-keyfile and --transport http)",
+    )
+    parser.add_argument(
+        "--ssl-keyfile",
+        default=env.get("RIGOL_MCP_SSL_KEYFILE") or None,
+        help="unencrypted PEM private key for HTTPS (requires --ssl-certfile)",
+    )
+    parser.add_argument(
         "--allow-no-auth",
         action="store_true",
         default=env.get("RIGOL_MCP_ALLOW_NO_AUTH", "").strip().lower() in ("1", "true", "yes", "on"),
@@ -826,7 +837,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=env.get("RIGOL_MCP_ALLOWED_HOSTS", ""),
         help="without a token: extra host names clients may use in the URL (comma-separated)",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.ssl_certfile is not None or args.ssl_keyfile is not None:
+        if not args.ssl_certfile or not args.ssl_keyfile:
+            parser.error(
+                "HTTPS requires both --ssl-certfile and --ssl-keyfile "
+                "(or their RIGOL_MCP_SSL_* variables)"
+            )
+        if args.transport != "http":
+            parser.error("TLS certificate/key settings require --transport http")
+    return args
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -839,12 +859,28 @@ def main(argv: list[str] | None = None) -> None:
 
     token = os.environ.get("RIGOL_MCP_TOKEN") or None
     check_http_exposure(args.host, token, args.allow_no_auth)
+    tls_options = {}
+    if args.ssl_certfile:
+        try:
+            # Validate before starting the service. An explicit empty password prevents
+            # OpenSSL from prompting on stdin if an encrypted key is supplied.
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(args.ssl_certfile, args.ssl_keyfile, password="")
+        except (OSError, ValueError) as exc:
+            raise SystemExit(
+                f"Cannot load TLS certificate/key (unencrypted PEM key required): {exc}"
+            ) from exc
+        tls_options = {
+            "ssl_certfile": args.ssl_certfile,
+            "ssl_keyfile": args.ssl_keyfile,
+            "ssl_keyfile_password": "",
+        }
     extra_hosts = [h for h in args.allowed_hosts.split(",") if h.strip()]
     if not token:
         allowed = ", ".join(dns_rebinding_settings(args.host, extra_hosts).allowed_hosts)
         print(f"No token set: accepting requests addressed to {allowed}", file=sys.stderr)
     app = build_http_app(token, bind_host=args.host, extra_hosts=extra_hosts)
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info", **tls_options)
 
 
 if __name__ == "__main__":

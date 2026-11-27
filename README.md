@@ -203,19 +203,23 @@ verification, and troubleshooting.
 
 By default the server speaks MCP over stdio and is started by the MCP client. It can also run
 as a long-lived service, for example on a small lab computer next to the scope, serving
-**streamable HTTP** at `/mcp`:
+**streamable HTTP** at `/mcp`. For HTTPS, provide a PEM certificate chain and its
+unencrypted private key. See the guide's [certificate setup](docs/remote-operation.md#certificates-for-a-private-lab)
+before running this example:
 
 ```bash
 export RIGOL_IP=192.168.1.123
 export RIGOL_MCP_TOKEN="$(openssl rand -hex 32)"
-uv run rigol-mcp --transport http --host 0.0.0.0 --port 8000
+uv run rigol-mcp --transport http --host 0.0.0.0 --port 8000 \
+  --ssl-certfile certs/server.pem --ssl-keyfile certs/server-key.pem
 ```
 
 Setting `RIGOL_MCP_HOST`, `RIGOL_MCP_PORT`, and `RIGOL_MCP_TOKEN` in `.env`
 configures the server; it does not switch a client to HTTP. Start the server with
 `--transport http` (or `RIGOL_MCP_TRANSPORT=http`), then configure the client with
-`http://<server-host>:8000/mcp` and the matching bearer token in its HTTP headers.
-The token can be stored directly in the client's private configuration; no client
+`https://<server-host>:8000/mcp` when TLS is enabled and the matching bearer token
+in its HTTP headers. The MCP transport setting remains `http` for HTTPS.
+The token can be stored directly in the client's private configuration; no token
 environment variable is required. See the guide for exact Codex and Claude Code
 examples.
 
@@ -225,13 +229,21 @@ examples.
 | `RIGOL_MCP_HOST` | `--host` | `127.0.0.1` | Address to listen on |
 | `RIGOL_MCP_PORT` | `--port` | `8000` | Port to listen on |
 | `RIGOL_MCP_TOKEN` | — | (none) | Bearer token required from HTTP clients |
+| `RIGOL_MCP_SSL_CERTFILE` | `--ssl-certfile` | (none) | PEM certificate chain for HTTPS; requires the key file |
+| `RIGOL_MCP_SSL_KEYFILE` | `--ssl-keyfile` | (none) | Unencrypted PEM private key for HTTPS; requires the certificate file |
 | `RIGOL_MCP_ALLOW_NO_AUTH` | `--allow-no-auth` | off | Allow a non-loopback address without a token |
 | `RIGOL_MCP_ALLOWED_HOSTS` | `--allowed-hosts` | (none) | Without a token: extra host names clients may use in the URL, comma-separated |
 
 When `RIGOL_MCP_TOKEN` is set, every request must carry `Authorization: Bearer <token>`. The
 server refuses to start on a non-loopback address without a token, since anyone who can reach
-it could control the scope. The token doesn't encrypt traffic; use a reverse proxy with HTTPS
-if it crosses an untrusted network.
+it could control the scope. The token doesn't encrypt traffic; use native HTTPS
+or an HTTPS reverse proxy for network connections. Clients must trust the
+certificate issuer and use a hostname or IP covered by the certificate.
+
+Both TLS files must be configured together with `--transport http`. Invalid or
+unreadable PEM files and mismatched keys stop startup; the server never falls
+back to HTTP after a TLS error. With both TLS settings unset or empty, it serves
+plain HTTP, suitable for a local reverse proxy. A TLS port accepts HTTPS only.
 
 Without a token, the server only accepts requests addressed to `localhost`, `127.0.0.1`,
 `[::1]`, the `--host` address and any `--allowed-hosts` names, and refuses browser requests
@@ -244,7 +256,7 @@ clients put in the URL in `--allowed-hosts`. The server prints the accepted name
 Connect Claude Code to it:
 
 ```bash
-claude mcp add --transport http rigol http://<host>:8000/mcp \
+claude mcp add --transport http rigol https://<host>:8000/mcp \
   --header "Authorization: Bearer $RIGOL_MCP_TOKEN"
 ```
 

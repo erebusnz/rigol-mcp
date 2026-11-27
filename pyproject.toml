@@ -31,6 +31,7 @@ dependencies = [
 test = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "trustme>=1.2",          # temporary certificate authorities for HTTPS integration tests
 ]
 
 [project.scripts]
