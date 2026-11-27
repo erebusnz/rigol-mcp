@@ -1,6 +1,7 @@
 """Tests for the streamable HTTP transport. Fully offline: no scope is opened."""
 
 import contextlib
+import asyncio
 import json
 import socket
 import threading
@@ -270,3 +271,133 @@ class TestBearer:
                 "/mcp", json=INIT, headers={"Accept": ACCEPT, "Authorization": "secret"}
             )
         assert response.status_code == 401
+
+
+@pytest.fixture
+def submitted_tools(monkeypatch):
+    """Synchronize concurrent clients on server receipt, rather than arbitrary sleeps."""
+    submitted = {}
+    submit = srv.InstrumentWorker.submit
+
+    def tracked_submit(worker, function, name, arguments):
+        future = submit(worker, function, name, arguments)
+        if name in submitted:
+            submitted[name].set()
+        return future
+
+    monkeypatch.setattr(srv.InstrumentWorker, "submit", tracked_submit)
+    return submitted
+
+
+async def test_slow_tool_keeps_http_responsive_and_serializes_other_clients(monkeypatch, submitted_tools):
+    entered, release = threading.Event(), threading.Event()
+    events = []
+    mode = "OFF"
+
+    def set_mode(scope, value):
+        nonlocal mode
+        mode = value
+        events.append(("mode", value))
+        if value == "MANUAL":
+            entered.set()
+            assert release.wait(5)
+
+    def set_positions(scope, requested_mode, **kwargs):
+        assert requested_mode == mode
+        events.append(("position", mode))
+
+    def values(scope):
+        events.append(("readback", mode))
+        return {"mode": mode}
+
+    monkeypatch.setattr(srv, "get_scope", lambda: object())
+    monkeypatch.setattr(srv, "set_cursor_mode", set_mode)
+    monkeypatch.setattr(srv, "set_cursor_positions", set_positions)
+    monkeypatch.setattr(srv, "get_cursor_values", values)
+    monkeypatch.setattr(srv, "_MIN_INTERVAL", 0)
+    with _serve(TOKEN) as url:
+        async with (
+            _session(url, {"Authorization": f"Bearer {TOKEN}"}) as first,
+            _session(url, {"Authorization": f"Bearer {TOKEN}"}) as second,
+        ):
+            a = asyncio.create_task(first.call_tool("set_cursors", {"mode": "MANUAL", "ax": 1}))
+            try:
+                assert await asyncio.to_thread(entered.wait, 3)
+                # These calls need no instrument access and must finish while A is blocked.
+                assert (await asyncio.wait_for(second.list_tools(), 1)).tools
+                await asyncio.wait_for(second.send_ping(), 1)
+                async with asyncio.timeout(1):
+                    async with _session(url, {"Authorization": f"Bearer {TOKEN}"}) as newcomer:
+                        await newcomer.send_ping()
+                submitted_tools["set_cursors"] = queued = threading.Event()
+                b = asyncio.create_task(second.call_tool("set_cursors", {"mode": "TRACK", "ax": 2}))
+                assert await asyncio.to_thread(queued.wait, 3)
+                assert not b.done()
+            finally:
+                release.set()
+            results = await asyncio.gather(a, b)
+            assert all(not result.isError for result in results)
+            assert "MANUAL" in results[0].content[0].text
+            assert "TRACK" in results[1].content[0].text
+    assert events == [
+        ("mode", "MANUAL"), ("position", "MANUAL"), ("readback", "MANUAL"),
+        ("mode", "TRACK"), ("position", "TRACK"), ("readback", "TRACK"),
+    ]
+
+
+async def test_cancelled_http_screenshot_finishes_recovery_before_next_tool(
+    monkeypatch, tmp_path, submitted_tools,
+):
+    entered, release = threading.Event(), threading.Event()
+    events = []
+
+    def capture(scope):
+        events.append(("capture", time.monotonic(), threading.get_ident()))
+        entered.set()
+        assert release.wait(5)
+        return b"fake png"
+
+    def record(name):
+        events.append((name, time.monotonic(), threading.get_ident()))
+        return {}
+
+    monkeypatch.setenv("RIGOL_SCREENSHOT_DIR", str(tmp_path))
+    monkeypatch.setattr(srv, "get_scope", lambda: object())
+    monkeypatch.setattr(srv, "screenshot_png", capture)
+    monkeypatch.setattr(srv, "usb_in_use", lambda: True)
+    monkeypatch.setattr(srv, "active_backend", lambda: "@py")
+    monkeypatch.setattr(srv, "invalidate_scope", lambda: record("invalidate"))
+    monkeypatch.setattr(srv, "get_scope_state", lambda scope: record("read"))
+    monkeypatch.setattr(srv, "disconnect_scope", lambda: record("disconnect"))
+    monkeypatch.setattr(srv, "_MIN_INTERVAL", 0)
+    monkeypatch.setattr(srv, "_POST_SCREENSHOT_DELAY", 0.05)
+    with _serve(TOKEN) as url:
+        async with _session(url, {"Authorization": f"Bearer {TOKEN}"}) as second:
+            async with _session(url, {"Authorization": f"Bearer {TOKEN}"}) as first:
+                a = asyncio.create_task(first.call_tool("screenshot", {}))
+                try:
+                    assert await asyncio.to_thread(entered.wait, 3)
+                    a.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await a
+                except BaseException:
+                    release.set()
+                    raise
+            # Closing A's session must neither stop the active job nor close B's connection.
+            try:
+                assert [e[0] for e in events] == ["capture"]
+                submitted_tools["disconnect"] = closing = threading.Event()
+                b = asyncio.create_task(second.call_tool("disconnect", {}))
+                assert await asyncio.to_thread(closing.wait, 3)
+                submitted_tools["get_scope_state"] = reading = threading.Event()
+                c = asyncio.create_task(second.call_tool("get_scope_state", {}))
+                assert await asyncio.to_thread(reading.wait, 3)
+            finally:
+                release.set()
+            results = await asyncio.gather(b, c)
+            assert all(not result.isError for result in results)
+    names = [e[0] for e in events]
+    assert names == ["capture", "invalidate", "disconnect", "read", "disconnect"]
+    assert events[3][1] - events[1][1] >= 0.05
+    assert len({e[2] for e in events}) == 1
+    assert list(tmp_path.glob("*.png")), "Cancelled active tool must still finish saving its result"

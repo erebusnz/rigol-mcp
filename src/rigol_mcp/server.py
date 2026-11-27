@@ -6,6 +6,7 @@ import hmac
 import json
 import sys
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -28,6 +29,7 @@ from mcp.server.stdio import stdio_server
 from rigol_mcp.waveform_analysis import describe_waveform as _describe_waveform
 from rigol_mcp.memory_export import get_acquisition_info, export_acquisition
 from rigol_mcp.models import ANALOG_CHANNELS
+from rigol_mcp.worker import InstrumentWorker
 from rigol_mcp.scope import (
     get_scope, invalidate_scope, disconnect_scope, usb_in_use, active_backend,
     screenshot_png,
@@ -39,8 +41,39 @@ from rigol_mcp.scope import (
     get_scope_state, set_channel, set_timebase, set_trigger, get_waveform,
 )
 
+_worker: InstrumentWorker | None = None
+_worker_users = 0
+
+
+async def _close_scope():
+    async with _scope_lock:
+        disconnect_scope()
+
+
+@asynccontextmanager
+async def _instrument_lifespan(_server):
+    """Share one worker across sessions; HTTP also retains it between sessions."""
+    global _worker, _worker_users, _scope_lock
+    if _worker is None:
+        _scope_lock = asyncio.Lock()
+        _worker = InstrumentWorker(_close_scope)
+    elif _worker_users == 0:
+        raise RuntimeError("Instrument worker is shutting down")
+    _worker_users += 1
+    try:
+        yield {}
+    finally:
+        _worker_users -= 1
+        if _worker_users == 0:
+            try:
+                await _worker.aclose()
+            finally:
+                _worker = None
+
+
 server = Server(
     "rigol-mcp",
+    lifespan=_instrument_lifespan,
     instructions=(
         "Rigol oscilloscope control over SCPI.\n"
         "- Read the scope with the data tools first: measure/measure_between for numeric "
@@ -55,7 +88,8 @@ server = Server(
     ),
 )
 
-# Serialises all VISA operations — the underlying TCP socket is not thread/async safe.
+# Protects individual VISA operations within the instrument worker. Its queue
+# additionally serialises complete tools, including readback and screenshot cleanup.
 _scope_lock = asyncio.Lock()
 _last_call_time: float = 0.0
 _MIN_INTERVAL = 0.1          # 100 ms minimum between SCPI operations
@@ -448,12 +482,24 @@ async def list_tools() -> list[types.Tool]:
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
+    # Honour cancellation already pending before handing a job to the worker.
+    await asyncio.sleep(0)
+    if _worker is None or _worker_users == 0:
+        raise RuntimeError("Instrument worker is not running")
+    # Cancellation propagates to the concurrent Future: queued tools are skipped,
+    # while a running tool keeps its place until all instrument work is complete.
+    return await asyncio.wrap_future(_worker.submit(_dispatch_tool, name, arguments))
+
+
+async def _dispatch_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
+    """Execute a complete tool on the instrument thread."""
     global _last_call_time
     if name == "disconnect":
         # Deliberately avoid _call: it would open a scope just to disconnect it.
         async with _scope_lock:
             result = disconnect_scope()
-            _last_call_time = time.monotonic()
+            # Disconnect must not erase a preceding screenshot's recovery deadline.
+            _last_call_time = max(_last_call_time, time.monotonic())
         return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
     if name == "get_acquisition_info":
         result = await _call(get_acquisition_info)
@@ -728,8 +774,6 @@ def build_http_app(token: str | None = None, bind_host: str = "127.0.0.1", extra
     Without a token, requests must be addressed to a loopback name, the bind address or one
     of ``extra_hosts`` (DNS-rebinding protection, see ``dns_rebinding_settings``).
     """
-    import contextlib
-
     from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
     from starlette.applications import Starlette
     from starlette.routing import Route
@@ -742,9 +786,9 @@ def build_http_app(token: str | None = None, bind_host: str = "127.0.0.1", extra
     else:
         handler = _normalize_host_headers(handler)
 
-    @contextlib.asynccontextmanager
+    @asynccontextmanager
     async def lifespan(_app):
-        async with session_manager.run():
+        async with _instrument_lifespan(server), session_manager.run():
             yield
 
     return Starlette(routes=[Route("/mcp", endpoint=_ASGIEndpoint(handler))], lifespan=lifespan)

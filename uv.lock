@@ -712,6 +712,7 @@ name = "rigol-mcp"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "anyio" },
     { name = "libusb-package", marker = "python_full_version < '3.14'" },
     { name = "mcp", extra = ["cli"] },
     { name = "python-dotenv" },
@@ -728,6 +729,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = ">=4.5" },
     { name = "libusb-package", marker = "python_full_version < '3.14'", specifier = ">=1.0.26.0" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.30,<2" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },

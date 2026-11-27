@@ -1,5 +1,8 @@
-"""Unit tests for rigol_mcp.server — the _call retry/recovery wrapper and the
-backend-aware screenshot reconnect. VISA access is faked; no hardware involved."""
+"""Unit tests for the dispatcher, retry/recovery wrapper and screenshot reconnect.
+
+These exercise the worker-side handlers directly; test_http and test_worker cover
+the public dispatch queue. VISA access is faked; no hardware involved.
+"""
 
 import time
 import asyncio
@@ -43,7 +46,7 @@ async def test_disconnect_does_not_open_scope(monkeypatch):
     monkeypatch.setattr(srv, "get_scope", forbidden)
     monkeypatch.setattr(srv, "disconnect_scope", disconnect)
     assert "disconnect" in {t.name for t in await srv.list_tools()}
-    result = await srv.call_tool("disconnect", {})
+    result = await srv._dispatch_tool("disconnect", {})
     assert '"connected": false' in result[0].text
 
 
@@ -75,7 +78,7 @@ async def test_disconnect_waits_until_retries_finish(monkeypatch):
     monkeypatch.setattr(srv, "disconnect_scope", disconnect)
     active = asyncio.create_task(srv._call(operation))
     await backoff_started.wait()
-    closing = asyncio.create_task(srv.call_tool("disconnect", {}))
+    closing = asyncio.create_task(srv._dispatch_tool("disconnect", {}))
     queued = asyncio.create_task(srv._call(lambda scope: events.append("next")))
     await real_sleep(0)
     assert events == ["operation"] and not closing.done() and not queued.done()
@@ -93,7 +96,7 @@ async def test_cancelled_queued_disconnect_never_touches_scope(monkeypatch):
     monkeypatch.setattr(srv, "get_scope", forbidden)
     monkeypatch.setattr(srv, "disconnect_scope", forbidden)
     async with srv._scope_lock:
-        task = asyncio.create_task(srv.call_tool("disconnect", {}))
+        task = asyncio.create_task(srv._dispatch_tool("disconnect", {}))
         await asyncio.sleep(0)
         assert not task.done()
         task.cancel()
@@ -115,7 +118,7 @@ async def test_export_cleanup_retains_scope_lock(monkeypatch, tmp_path):
 
     monkeypatch.setattr(srv, "get_scope", lambda: scope)
     monkeypatch.setattr(mem, "invalidate_scope", invalidate)
-    result = await srv.call_tool("export_acquisition", {
+    result = await srv._dispatch_tool("export_acquisition", {
         "channels": ["CHAN1"], "output_dir": str(tmp_path),
     })
     assert '"complete": false' in result[0].text
@@ -261,12 +264,12 @@ async def test_export_tool_routing(monkeypatch):
     monkeypatch.setattr(srv, "_call", fake_call)
     tools = {t.name for t in await srv.list_tools()}
     assert {"export_acquisition", "get_acquisition_info"} <= tools
-    result = await srv.call_tool("export_acquisition", {"channels": ["CHAN1"]})
+    result = await srv._dispatch_tool("export_acquisition", {"channels": ["CHAN1"]})
     assert '"complete": true' in result[0].text
     assert calls[0][0] is srv.export_acquisition
     assert calls[0][1]["_retry"] is False
     with pytest.raises(ValueError, match="only complete records"):
-        await srv.call_tool("export_acquisition", {"start": -1})
+        await srv._dispatch_tool("export_acquisition", {"start": -1})
 
 
 async def test_acquisition_info_tool_routing(monkeypatch):
@@ -277,7 +280,7 @@ async def test_acquisition_info_tool_routing(monkeypatch):
         return {"status": "WAIT", "supported_transfer_modes": ["screen", "acquisition_memory"]}
 
     monkeypatch.setattr(srv, "_call", fake_call)
-    result = await srv.call_tool("get_acquisition_info", {})
+    result = await srv._dispatch_tool("get_acquisition_info", {})
     assert '"status": "WAIT"' in result[0].text
     assert calls == [(srv.get_acquisition_info, (), {})]
 
@@ -293,7 +296,7 @@ async def test_partial_export_response_survives_tool_routing(monkeypatch):
         return partial
 
     monkeypatch.setattr(srv, "export_acquisition", fake_export)
-    result = await srv.call_tool("export_acquisition", {"channels": ["CHAN1"]})
+    result = await srv._dispatch_tool("export_acquisition", {"channels": ["CHAN1"]})
     assert json.loads(result[0].text) == partial
 
 
@@ -344,7 +347,7 @@ async def _run_screenshot(monkeypatch, tmp_path, *, usb, backend):
     monkeypatch.setattr(srv, "active_backend", lambda: backend)
     monkeypatch.setattr(srv, "invalidate_scope", lambda: calls.__setitem__("invalidate", calls["invalidate"] + 1))
 
-    result = await srv.call_tool("screenshot", {})
+    result = await srv._dispatch_tool("screenshot", {})
     return result, calls, tmp_path
 
 
@@ -380,7 +383,7 @@ async def test_send_raw_listed_when_enabled(monkeypatch):
 
 async def test_send_raw_call_rejected_when_disabled():
     with pytest.raises(ValueError, match="send_raw is disabled"):
-        await srv.call_tool("send_raw", {"command": ":CHAN1:SCAL?"})
+        await srv._dispatch_tool("send_raw", {"command": ":CHAN1:SCAL?"})
 
 
 async def test_send_raw_call_works_when_enabled(monkeypatch):
@@ -390,5 +393,5 @@ async def test_send_raw_call_works_when_enabled(monkeypatch):
         return "1.000000e+00"
 
     monkeypatch.setattr(srv, "_call", fake_call)
-    result = await srv.call_tool("send_raw", {"command": ":CHAN1:SCAL?"})
+    result = await srv._dispatch_tool("send_raw", {"command": ":CHAN1:SCAL?"})
     assert result[0].text == "1.000000e+00"

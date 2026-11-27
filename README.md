@@ -236,7 +236,16 @@ claude mcp add --transport http rigol http://<host>:8000/mcp \
   --header "Authorization: Bearer $RIGOL_MCP_TOKEN"
 ```
 
-All sessions share one instrument connection, and scope access stays serialised.
+All sessions share one instrument connection. Complete tool calls run one at a time on a
+dedicated instrument worker, including configuration/readback and screenshot recovery.
+Other clients' scope calls wait their turn; MCP initialization, pings, and tool listings
+remain responsive while the instrument is busy. This also applies to stdio tool calls.
+
+Cancelling a queued call skips it. Once a call has started, it finishes its instrument
+operations and cleanup even if the client cancels or disconnects; a cancelled call may
+therefore still change the scope or save a capture. Shutdown skips queued calls, waits for
+the active call, and closes the connection on the worker. Separate tool calls within a
+measurement workflow can still interleave with another client's calls.
 
 ## Tools
 
