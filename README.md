@@ -19,14 +19,12 @@ Support is selected by exact model name and covers analog channels.
 | DS1000Z / MSO1000Z | 4 | Control, measurements, screenshots, screen waveforms, and RAW acquisition export |
 | DHO800 / DHO900 / DHO1000 / DHO1000U / DHO4000 | 2 or 4 | Control, measurements, screenshots, and screen waveforms |
 | DS2000A / MSO2000A | 2 | Model and channel information only |
-| MHO900 / MHO98 | 4 | Control, measurements, screenshots, screen waveforms, and acquisition information; hardware unverified |
+| MHO900 / MHO98 | 4 | Control, measurements, screenshots, screen waveforms, and acquisition information |
 | MHO2000 | 4 | Model and channel information only |
 | DHO5000 / MHO5000 / MSO/DS9000 | 2, 4, 6, or 8 | Model and channel information only |
 
-Only catalogued model names are recognized. Model/channel information alone does
-not enable measurements, waveforms, or other tools that require a SCPI driver.
-See [hardware support and validation](docs/hardware-support.md) for the exact model
-list, manufacturer sources, hardware test reports, and coverage limits.
+See [hardware support](docs/hardware-support.md) for exact models, manufacturer
+references, and hardware tests.
 
 The scope connects either over your **local network via Ethernet** (rear panel RJ45) or over **USB** (rear panel USB-B device port). LAN is the default; USB is used when `RIGOL_USB` is set (see [Configuration](#configuration)). USB transport has been validated on DS1000Z; DHO support has so far been validated over LAN only.
 
@@ -34,7 +32,7 @@ The scope connects either over your **local network via Ethernet** (rear panel R
 
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/)
-- A registered Rigol DS1000Z, DHO, or MHO900/MHO98 scope connected to your computer (see [hardware validation status](docs/hardware-support.md#recorded-hardware-reports))
+- A supported Rigol scope connected to your computer
 - For LAN: SCPI over TCP/IP enabled on the scope (on by default)
 - For USB: a VISA driver on the scope's USB interface — either the native USBTMC driver
   (e.g. from Rigol UltraSigma / any NI-VISA runtime) or WinUSB via Zadig

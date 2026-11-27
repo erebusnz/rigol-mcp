@@ -230,7 +230,6 @@ class ModernRigolDriver(ScopeDriver):
 
     MHO900/MHO98 programming guides: acquisition section 3.3, cursors 3.8,
     display 3.9, measurements 3.17, and waveforms 3.28. See docs/hardware-support.md for sources.
-    Reusing these commands does not enable other DHO/MHO catalog families.
     """
 
     # These families expose a 4-way matrix combining
@@ -293,7 +292,6 @@ class DHODriver(ModernRigolDriver):
 class MHO900Driver(ModernRigolDriver):
     """MHO934, MHO954, MHO984 and MHO98; analog screen transfers only.
 
-    Documentation-backed and tested offline; not hardware-verified by this project.
     RAW memory export and digital waveform inputs remain unsupported.
     """
 
