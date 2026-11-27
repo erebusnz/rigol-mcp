@@ -697,6 +697,21 @@ def _require_bearer(app, token: str):
     return wrapped
 
 
+def _normalize_host_headers(app):
+    """Match Host/Origin values against the SDK's lowercase allowlists."""
+    async def wrapped(scope, receive, send):
+        if scope["type"] == "http":
+            # The SDK compares header values case-sensitively. Hosts and origin
+            # schemes are case-insensitive; an Origin has no path component.
+            scope = dict(scope, headers=[
+                (name, value.lower() if name in (b"host", b"origin") else value)
+                for name, value in scope["headers"]
+            ])
+        await app(scope, receive, send)
+
+    return wrapped
+
+
 class _ASGIEndpoint:
     """Wrap an ASGI callable so Starlette's Route treats it as an app, not a view."""
 
@@ -724,6 +739,8 @@ def build_http_app(token: str | None = None, bind_host: str = "127.0.0.1", extra
     handler = session_manager.handle_request
     if token:
         handler = _require_bearer(handler, token)
+    else:
+        handler = _normalize_host_headers(handler)
 
     @contextlib.asynccontextmanager
     async def lifespan(_app):

@@ -132,21 +132,23 @@ class TestArgs:
 ACCEPT = "application/json, text/event-stream"
 
 
-def test_no_token_refuses_foreign_host(http_url_no_token):
+@pytest.mark.parametrize("host", ["attacker.example:8000", "LOCALHOST.attacker.example:8000"])
+def test_no_token_refuses_foreign_host(http_url_no_token, host):
     # DNS rebinding: a page on attacker.example resolving to 127.0.0.1 sends its own Host.
     response = httpx.post(
         http_url_no_token,
         json={},
-        headers={"Host": "attacker.example:8000", "Accept": ACCEPT},
+        headers={"Host": host, "Accept": ACCEPT},
     )
     assert response.status_code == 421
 
 
-def test_no_token_refuses_foreign_origin(http_url_no_token):
+@pytest.mark.parametrize("origin", ["http://attacker.example", "http://LOCALHOST.attacker.example"])
+def test_no_token_refuses_foreign_origin(http_url_no_token, origin):
     response = httpx.post(
         http_url_no_token,
         json={},
-        headers={"Origin": "http://attacker.example", "Accept": ACCEPT},
+        headers={"Origin": origin, "Accept": ACCEPT},
     )
     assert response.status_code == 403
 
@@ -200,17 +202,32 @@ def _client(app, host):
 
 
 class TestHostCheck:
-    @pytest.mark.parametrize("host", ["localhost", "localhost:8000", "127.0.0.1:8000", "[::1]:8000"])
+    @pytest.mark.parametrize("host", [
+        "localhost", "localhost:8000", "LOCALHOST", "LocalHost:8000", "127.0.0.1:8000", "[::1]:8000",
+    ])
     def test_loopback_accepted(self, host):
         with _client(srv.build_http_app(None), "localhost") as client:
             response = client.post("/mcp", json=INIT, headers={"Accept": ACCEPT, "Host": host})
         assert response.status_code == 200, response.text
 
-    @pytest.mark.parametrize("host", ["bench-pi.lan", "bench-pi.lan:8000", "BENCH-PI.lan"])
+    @pytest.mark.parametrize("host", [
+        "bench-pi.lan", "bench-pi.lan:8000", "BENCH-PI.lan", "BENCH-PI.lan:8000",
+    ])
     def test_allowed_host_with_or_without_port(self, host):
         app = srv.build_http_app(None, bind_host="0.0.0.0", extra_hosts=["Bench-Pi.LAN"])
-        with _client(app, host) as client:
-            response = client.post("/mcp", json=INIT, headers={"Accept": ACCEPT})
+        with _client(app, "localhost") as client:
+            # An explicit header preserves case; httpx normalizes hostnames in URLs.
+            response = client.post("/mcp", json=INIT, headers={"Accept": ACCEPT, "Host": host})
+        assert response.status_code == 200, response.text
+
+    @pytest.mark.parametrize("origin", [
+        "http://BENCH-PI.lan", "http://BENCH-PI.lan:8000",
+        "HTTPS://Bench-Pi.LAN", "HTTPS://Bench-Pi.LAN:8443",
+    ])
+    def test_allowed_origin_case_insensitive(self, origin):
+        app = srv.build_http_app(None, bind_host="0.0.0.0", extra_hosts=["Bench-Pi.LAN"])
+        with _client(app, "localhost") as client:
+            response = client.post("/mcp", json=INIT, headers={"Accept": ACCEPT, "Origin": origin})
         assert response.status_code == 200, response.text
 
     def test_wildcard_bind_refuses_lan_address(self):
