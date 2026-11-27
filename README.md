@@ -22,10 +22,8 @@ Support is selected by exact model name and covers analog channels.
 | MHO900 / MHO98 / MHO2000 | 4 | Model and channel information only |
 | DHO5000 / MHO5000 / MSO/DS9000 | 2, 4, 6, or 8 | Model and channel information only |
 
-Only catalogued model names are recognized. Model/channel information alone does
-not enable measurements, waveforms, or other tools that require a SCPI driver.
-See [hardware support and validation](docs/hardware-support.md) for the exact model
-list, manufacturer sources, hardware test reports, and coverage limits.
+See [hardware support](docs/hardware-support.md) for exact models, manufacturer
+references, and hardware tests.
 
 The scope connects either over your **local network via Ethernet** (rear panel RJ45) or over **USB** (rear panel USB-B device port). LAN is the default; USB is used when `RIGOL_USB` is set (see [Configuration](#configuration)). USB transport has been validated on DS1000Z; DHO support has so far been validated over LAN only.
 
