@@ -183,6 +183,12 @@ async def test_mcp_mho900_identification_measurement_waveform_and_limits(usb_con
         assert not identity.isError and "MHO900" in identity.content[0].text
         assert "['CHAN1', 'CHAN2', 'CHAN3', 'CHAN4']" in identity.content[0].text
 
+        before = (list(scope.queries), list(scope.written))
+        rejected = await client.call_tool("measure", {"channel": "CHAN2", "item": "VARIANCE"})
+        assert rejected.isError and "VARIANCE" in rejected.content[0].text
+        assert "MHO900" in rejected.content[0].text
+        assert (scope.queries, scope.written) == before
+
         measured = await client.call_tool("measure", {"channel": "CHAN4", "item": "VPP"})
         assert not measured.isError and "2.5" in measured.content[0].text
         delay = await client.call_tool("measure_between", {

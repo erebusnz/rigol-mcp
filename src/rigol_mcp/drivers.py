@@ -20,6 +20,17 @@ import pyvisa
 from rigol_mcp.models import capabilities_for
 
 
+_COMMON_SINGLE_SOURCE_ITEMS = frozenset({
+    "VMAX", "VMIN", "VPP", "VTOP", "VBASE", "VAMP", "VAVG", "VRMS",
+    "OVERSHOOT", "PRESHOOT", "MAREA", "MPAREA",
+    "VUPPER", "VMID", "VLOWER", "PVRMS",
+    "PERIOD", "FREQUENCY", "RTIME", "FTIME",
+    "PWIDTH", "NWIDTH", "PDUTY", "NDUTY",
+    "TVMAX", "TVMIN", "PSLEWRATE", "NSLEWRATE",
+    "PPULSES", "NPULSES", "PEDGES", "NEDGES",
+})
+
+
 class MemoryTransferError(RuntimeError):
     """A RAW binary transfer failed; its VISA stream may be desynchronized."""
 
@@ -61,6 +72,7 @@ class ScopeDriver:
     name: str = "generic"
     memory_chunk_points: int = 0  # zero means full-memory export is unsupported
     supports_acquisition_info: bool = False
+    single_source_items: frozenset[str] = frozenset()
 
     def acquisition_info(self, scope) -> dict:
         if not self.supports_acquisition_info:
@@ -134,6 +146,14 @@ class ScopeDriver:
         raise NotImplementedError
 
     # --- measurement ---
+    def validate_measure_item(self, item: str) -> None:
+        """Validate a single-source item before channel or measurement I/O."""
+        if item not in self.single_source_items:
+            raise ValueError(
+                f"'{item}' is not a valid single-source item for {self.name}. "
+                f"Valid: {sorted(self.single_source_items)}"
+            )
+
     def register_measure_item(self, scope: pyvisa.resources.Resource,
                               item: str, *sources: str) -> None:
         """Activate ``item`` for the given source channel(s) so the next
@@ -160,6 +180,7 @@ class DS1000ZDriver(ScopeDriver):
     name = "DS1000Z"
     memory_chunk_points = 250_000
     supports_acquisition_info = True
+    single_source_items = _COMMON_SINGLE_SOURCE_ITEMS | {"VARIANCE"}
 
     def prepare_memory(self, scope, channel: str) -> None:
         from rigol_mcp.scope import check_scpi_error
@@ -287,6 +308,7 @@ class DHODriver(ModernRigolDriver):
     """Registered DHO800/900/1000/1000U/4000 models."""
 
     name = "DHO"
+    single_source_items = _COMMON_SINGLE_SOURCE_ITEMS | {"VARIANCE"}
 
 
 class MHO900Driver(ModernRigolDriver):
@@ -297,6 +319,7 @@ class MHO900Driver(ModernRigolDriver):
 
     name = "MHO900"
     supports_acquisition_info = True
+    single_source_items = _COMMON_SINGLE_SOURCE_ITEMS
 
     def validate_channel_configuration(self, scope, channel, *, display, vertical):
         # MHO98 firmware 00.01.00 has been reported to silently ignore SCAL/OFFS
@@ -318,6 +341,10 @@ DS1000Z = DS1000ZDriver()
 DHO = DHODriver()
 MHO900 = MHO900Driver()
 _DRIVERS: tuple[ScopeDriver, ...] = (DHO, DS1000Z, MHO900)
+
+ALL_SINGLE_SOURCE_ITEMS: frozenset[str] = frozenset().union(
+    *(d.single_source_items for d in _DRIVERS)
+)
 
 # Union of every family's two-source items — used to reject two-source items passed to the
 # single-source measure(), and to advertise the full enum in the tool schema.

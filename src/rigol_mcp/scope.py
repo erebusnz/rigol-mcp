@@ -15,6 +15,7 @@ from rigol_mcp.models import ModelCapabilities, capabilities_for
 from rigol_mcp.drivers import (
     ScopeDriver,
     driver_for,
+    ALL_SINGLE_SOURCE_ITEMS,
     ALL_TWO_SOURCE_ITEMS,
     # Re-exported so existing callers/tests keep reaching these via rigol_mcp.scope.
     screen_x_to_time,  # noqa: F401
@@ -546,18 +547,8 @@ def connection_info() -> dict:
     return info
 
 
-# All measurement items supported by DS1000Z :MEASure:ITEM
-MEASURE_ITEMS = frozenset({
-    # Voltage
-    "VMAX", "VMIN", "VPP", "VTOP", "VBASE", "VAMP", "VAVG", "VRMS",
-    "OVERSHOOT", "PRESHOOT", "MAREA", "MPAREA",
-    "VUPPER", "VMID", "VLOWER", "VARIANCE", "PVRMS",
-    # Time (single-source)
-    "PERIOD", "FREQUENCY", "RTIME", "FTIME",
-    "PWIDTH", "NWIDTH", "PDUTY", "NDUTY",
-    "TVMAX", "TVMIN", "PSLEWRATE", "NSLEWRATE",
-    "PPULSES", "NPULSES", "PEDGES", "NEDGES",
-})
+# Known single-source items across registered drivers.
+MEASURE_ITEMS = ALL_SINGLE_SOURCE_ITEMS
 
 # Two-source (delay/phase) items across all families — used to reject them from the
 # single-source measure(). Each family's own accepted set lives on its driver.
@@ -574,6 +565,7 @@ def measure(scope: pyvisa.resources.Resource, channel: str, item: str) -> str:
         raise ValueError(f"Unknown item '{item}'. Valid: {sorted(MEASURE_ITEMS)}")
     ch = validate_analog_channel(scope, ch)
     driver = get_driver(scope)
+    driver.validate_measure_item(it)
     note = ensure_channel_displayed(scope, ch)
     driver.register_measure_item(scope, it, ch)
     value = annotate_measurement_value(scope.query(f":MEASure:ITEM? {it},{ch}").strip())

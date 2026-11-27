@@ -104,6 +104,31 @@ def test_shared_measurement_registers_statistic_item(model):
     assert scope.written == [":MEASure:STATistic:ITEM VPP,CHAN4"]
 
 
+@pytest.mark.parametrize("model", ["MHO934", "MHO954", "MHO984", "MHO98"])
+def test_mho_variance_is_rejected_before_enabling_channel(model, monkeypatch):
+    monkeypatch.setattr(sc.time, "sleep", lambda _: None)
+    scope = RecordingScope(model, {
+        ":CHAN4:DISP?": "0", ":SYSTem:ERRor?": "0",
+        ":MEASure:ITEM? VARIANCE,CHAN4": "1.25",
+    })
+    with pytest.raises(ValueError, match="VARIANCE.*MHO900"):
+        sc.measure(scope, "chan4", "variance")
+    assert scope.queries == ["*IDN?"]
+    assert not scope.written
+
+
+@pytest.mark.parametrize("model,command", [
+    ("DS1104Z", ":MEASure:ITEM VARIANCE,CHAN4"),
+    ("DHO924S", ":MEASure:STATistic:ITEM VARIANCE,CHAN4"),
+])
+def test_existing_variance_measurements_keep_their_commands(model, command):
+    scope = RecordingScope(model, {
+        ":CHAN4:DISP?": "1", ":MEASure:ITEM? VARIANCE,CHAN4": "1.25",
+    })
+    assert sc.measure(scope, "chan4", "variance") == "1.25"
+    assert scope.written == [command]
+
+
 @pytest.mark.parametrize("item,wire_item", [
     ("RDELAY", "RRDELAY"), ("FDELAY", "FFDELAY"),
     ("RPHASE", "RRPHASE"), ("FPHASE", "FFPHASE"), ("RFPHASE", "RFPHASE"),

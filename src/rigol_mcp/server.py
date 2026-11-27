@@ -262,7 +262,7 @@ async def list_tools() -> list[types.Tool]:
                 "VAMP (=VTOP−VBASE — not the same as VPP=VMAX−VMIN), "
                 "VAVG, VRMS (RMS over screen window), PVRMS (RMS over one period), "
                 "VUPPER/VMID/VLOWER (timing thresholds at 90%/50%/10% of VAMP by default), "
-                "VARIANCE (statistical variance of voltage samples), "
+                "VARIANCE (statistical variance of voltage samples; unavailable on MHO900/MHO98), "
                 "FREQUENCY, PERIOD, PWIDTH, NWIDTH, PDUTY, NDUTY, "
                 "RTIME, FTIME, OVERSHOOT, PRESHOOT, "
                 "PSLEWRATE, NSLEWRATE (slew rate, V/s), "
