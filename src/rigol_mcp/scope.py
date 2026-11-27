@@ -78,6 +78,7 @@ def usb_in_use() -> bool:
 
 
 def _skip_usb_clear() -> bool:
+    """Whether USB device clear is disabled for connection setup and recovery."""
     return usb_in_use() and _env_enabled("RIGOL_USB_SKIP_CLEAR")
 
 
@@ -162,26 +163,31 @@ def _close_rm(rm: pyvisa.ResourceManager) -> None:
 
 
 def _usb_resource_override() -> str:
-    """Return a configured Rigol USBTMC address, validated without VISA I/O."""
+    """Validate an optional direct USBTMC address without enumerating devices."""
     resource = os.environ.get("RIGOL_USB_RESOURCE", "").strip()
     if not resource:
         return ""
     try:
         address = pyvisa.rname.ResourceName.from_string(resource)
-        if isinstance(address, pyvisa.rname.USBInstr) and int(address.manufacturer_id, 0) == _RIGOL_USB_VID:
+        if (isinstance(address, pyvisa.rname.USBInstr)
+                and int(address.manufacturer_id, 0) == _RIGOL_USB_VID):
             return resource
     except ValueError:
         pass
-    raise RuntimeError("RIGOL_USB_RESOURCE must be a Rigol USB VISA instrument address (vendor 0x1AB1).")
+    raise RuntimeError(
+        "RIGOL_USB_RESOURCE must be a Rigol USB VISA instrument address (vendor 0x1AB1)."
+    )
 
 
 def _open_usb_scope() -> tuple[pyvisa.ResourceManager, pyvisa.resources.Resource]:
-    """Open the Rigol USB scope, auto-selecting the backend that can see it.
+    """Open the Rigol USB scope, auto-selecting a suitable backend.
 
     A scope whose USB interface is bound to WinUSB is reachable via pyvisa-py (@py);
     a scope on the native USBTMC driver is reachable via an installed NI-VISA backend
     (@ivi). Each backend only sees devices bound to its kind of driver, so we try them
-    in turn and use the first that finds the scope. Returns (resource_manager, resource).
+    in turn and use the first that finds the scope. RIGOL_USB_RESOURCE bypasses
+    discovery on every backend, including after open failures and reconnects.
+    Returns (resource_manager, resource).
     """
     global _usb_backend_hint
     explicit_resource = _usb_resource_override()
@@ -190,6 +196,7 @@ def _open_usb_scope() -> tuple[pyvisa.ResourceManager, pyvisa.resources.Resource
         ([_usb_backend_hint] if _usb_backend_hint else []) + list(_USB_BACKENDS)
     ))
     problems: list[str] = []
+    retryable_open_error: Exception | None = None
     for backend in order:
         try:
             rm = pyvisa.ResourceManager(backend)
@@ -209,13 +216,19 @@ def _open_usb_scope() -> tuple[pyvisa.ResourceManager, pyvisa.resources.Resource
         try:
             scope = rm.open_resource(resource)
         except Exception as exc:
-            problems.append(f"{backend}: could not open {resource} ({type(exc).__name__}: {exc})")
             _close_rm(rm)
+            if not explicit_resource:
+                raise  # preserve the existing discovery path's retry behavior
+            problems.append(f"{backend}: could not open {resource} ({type(exc).__name__}: {exc})")
+            # A direct address may be inaccessible on this backend's USB driver.
+            # Try the others, but retain communication errors for server._call's retries.
+            if isinstance(exc, (pyvisa.errors.VisaIOError, UnicodeDecodeError, OSError)):
+                retryable_open_error = exc
             continue
         _usb_backend_hint = backend
         return rm, scope
 
-    raise RuntimeError(
+    message = (
         "RIGOL_USB is set but no Rigol USB scope could be opened on any backend:\n  "
         + "\n  ".join(problems)
         + "\n\nThe scope's USB interface must be bound to a supported driver:\n"
@@ -225,6 +238,10 @@ def _open_usb_scope() -> tuple[pyvisa.ResourceManager, pyvisa.resources.Resource
         "for this interpreter: libusb-package has no wheel for every Python (e.g. 3.14), so\n"
         "run on a Python it ships wheels for, or use the native USBTMC driver via NI-VISA."
     )
+    if retryable_open_error is not None:
+        retryable_open_error.add_note(message)
+        raise retryable_open_error
+    raise RuntimeError(message)
 
 
 def get_scope() -> pyvisa.resources.Resource:
@@ -248,7 +265,8 @@ def get_scope() -> pyvisa.resources.Resource:
             try:
                 _scope.clear()  # flush any stale data left in the receive buffer
             except pyvisa.errors.VisaIOError:
-                # Some backends do not support VISA device clear.
+                # Some backends do not support VISA device clear; this initial
+                # flush is only a best-effort cleanup.
                 pass
         _scope.write("*CLS")  # clear the SCPI error queue (clear() only flushes I/O buffers)
     return _scope
