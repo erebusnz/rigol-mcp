@@ -25,7 +25,9 @@
 "DHO1102" = { family = "DHO", analog_channel_count = 2 }
 "DHO1104" = { family = "DHO", analog_channel_count = 4 }
 "DHO1202" = { family = "DHO", analog_channel_count = 2 }
+"DHO1202U" = { family = "DHO", analog_channel_count = 2 }
 "DHO1204" = { family = "DHO", analog_channel_count = 4 }
+"DHO1204U" = { family = "DHO", analog_channel_count = 4 }
 "DHO4204" = { family = "DHO", analog_channel_count = 4 }
 "DHO4404" = { family = "DHO", analog_channel_count = 4 }
 "DHO4804" = { family = "DHO", analog_channel_count = 4 }
@@ -56,6 +58,39 @@
 "MSO2202A-S" = { family = "DS2000A", analog_channel_count = 2 }
 "MSO2302A" = { family = "DS2000A", analog_channel_count = 2 }
 "MSO2302A-S" = { family = "DS2000A", analog_channel_count = 2 }
+
+# Newer documented families: channel metadata only; no SCPI driver registered.
+# Keep DHO5000 separate from DHO until its dialect has been validated.
+# Manufacturer model tables and review date are recorded in README.md.
+
+# MHO900 / MHO98 (the special-edition MHO98 also has four analog channels)
+"MHO934" = { family = "MHO900", analog_channel_count = 4 }
+"MHO954" = { family = "MHO900", analog_channel_count = 4 }
+"MHO984" = { family = "MHO900", analog_channel_count = 4 }
+"MHO98" = { family = "MHO900", analog_channel_count = 4 }
+
+# MHO2000
+"MHO2024" = { family = "MHO2000", analog_channel_count = 4 }
+"MHO2034" = { family = "MHO2000", analog_channel_count = 4 }
+
+# DHO5000
+"DHO5054" = { family = "DHO5000", analog_channel_count = 4 }
+"DHO5104" = { family = "DHO5000", analog_channel_count = 4 }
+"DHO5058" = { family = "DHO5000", analog_channel_count = 8 }
+"DHO5108" = { family = "DHO5000", analog_channel_count = 8 }
+
+# MHO5000
+"MHO5054" = { family = "MHO5000", analog_channel_count = 4 }
+"MHO5104" = { family = "MHO5000", analog_channel_count = 4 }
+"MHO5056" = { family = "MHO5000", analog_channel_count = 6 }
+"MHO5106" = { family = "MHO5000", analog_channel_count = 6 }
+
+# MSO/DS9000
+"DS9202" = { family = "DS9000", analog_channel_count = 2 }
+"DS9204" = { family = "DS9000", analog_channel_count = 4 }
+"DS9404" = { family = "DS9000", analog_channel_count = 4 }
+"DS9604" = { family = "DS9000", analog_channel_count = 4 }
+"MSO9402" = { family = "DS9000", analog_channel_count = 2 }
 
 # Published Plus spelling variants. Targets must be canonical model names.
 [aliases]

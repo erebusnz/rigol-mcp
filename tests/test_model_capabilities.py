@@ -22,6 +22,10 @@ class RecordingScope(FakeScope):
     ("DHO802", ("CHAN1", "CHAN2")),
     ("DS2202A", ("CHAN1", "CHAN2")),
     ("DS1054Z", ("CHAN1", "CHAN2", "CHAN3", "CHAN4")),
+    ("DHO1202U", ("CHAN1", "CHAN2")),
+    ("DHO1204U", ("CHAN1", "CHAN2", "CHAN3", "CHAN4")),
+    ("MHO5106", ("CHAN1", "CHAN2", "CHAN3", "CHAN4", "CHAN5", "CHAN6")),
+    ("DHO5108", ("CHAN1", "CHAN2", "CHAN3", "CHAN4", "CHAN5", "CHAN6", "CHAN7", "CHAN8")),
 ])
 def test_state_queries_only_existing_analog_channels(model, channels):
     responses = {
@@ -58,7 +62,7 @@ def test_unknown_model_fails_before_channel_io(operation):
     assert not scope.written
 
 
-@pytest.mark.parametrize("channel", ["CHAN3", "CHAN4"])
+@pytest.mark.parametrize("channel", ["CHAN3", "CHAN4", "CHAN5", "CHAN6", "CHAN7", "CHAN8"])
 @pytest.mark.parametrize("operation", [
     lambda scope, channel: sc.set_channel(scope, channel, display=True, scale=0.5),
     lambda scope, channel: sc.measure(scope, channel, "VPP"),
@@ -76,8 +80,9 @@ def test_unavailable_channel_is_rejected_before_queries_or_mutations(operation, 
     assert not scope.written
 
 
-def test_valid_second_channel_can_be_configured_and_measured():
-    scope = RecordingScope(responses={":SYSTem:ERRor?": "0", ":CHAN2:DISP?": "1", ":MEASure:ITEM?": "2.5"})
+@pytest.mark.parametrize("model", ["DHO802", "DHO1202U", "DHO1204U"])
+def test_valid_second_channel_can_be_configured_and_measured(model):
+    scope = RecordingScope(model, responses={":SYSTem:ERRor?": "0", ":CHAN2:DISP?": "1", ":MEASure:ITEM?": "2.5"})
     sc.set_channel(scope, "chan2", display=True, scale=0.5)
     assert sc.measure(scope, "chan2", "vpp") == "2.5"
     assert scope.written == [":CHAN2:DISP ON", ":CHAN2:SCAL 0.5", ":MEASure:STATistic:ITEM VPP,CHAN2"]
@@ -115,6 +120,22 @@ def test_known_channel_count_does_not_imply_scpi_driver_support():
     assert capabilities_for(idn).analog_channels == ("CHAN1", "CHAN2")
     with pytest.raises(RuntimeError, match="No dialect driver matched"):
         drivers.driver_for(idn)
+
+
+@pytest.mark.parametrize("model,count", [
+    ("MHO98", 4), ("MHO934", 4), ("MHO2034", 4),
+    ("DHO5054", 4), ("DHO5108", 8), ("MHO5106", 6),
+    ("DS9202", 2), ("MSO9402", 2), ("DS9604", 4),
+])
+def test_newer_families_report_counts_without_selecting_an_existing_driver(model, count):
+    identity = f"RIGOL TECHNOLOGIES,{model},SERIAL,1.0"
+    # In particular, DHO5108 must not select DHO based on its name prefix,
+    # and MHO98 must not be assigned eight channels from its last digit.
+    assert capabilities_for(identity).analog_channel_count == count
+    assert sc.set_driver_from_idn(identity) is None
+    assert sc._driver is None
+    with pytest.raises(RuntimeError, match="No dialect driver matched"):
+        drivers.driver_for(identity)
 
 
 @pytest.mark.parametrize("model", ["DS1102E", "DHO9994", "UNKNOWN"])

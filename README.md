@@ -30,7 +30,7 @@ Unknown signal (square wave into LCR trap), wrong channel enabled, invalid timeb
 |---|---|---|
 | DHO924S | 4 analog + signal gen | 250 MHz |
 
-Other registered DHO models (DHO800/900/1000/4000 families) use the same driver but are not hardware-verified.
+Other registered DHO models (DHO800/900/1000/1000U/4000 families) use the same driver but are not hardware-verified. Newer DHO5000 models have channel metadata only and do not select this driver.
 
 ### Model capabilities and channel selection
 
@@ -69,6 +69,7 @@ screenshots, and acquisition exports.
 | DHO804, DHO814, DHO824 | 4 | [DHO800 user guide, document overview](https://www.rigol.com/dam/global/downloads/brochures/zh/user-manual/oscillosopes/DHO800_UserGuide_CN.pdf) |
 | DHO914, DHO914S, DHO924, DHO924S | 4 | [DHO900 product table](https://www.rigolna.com/products/digital-oscilloscopes/dho900/) |
 | DHO1072, DHO1102, DHO1202 | 2 | [DHO1000/4000 programming guide, document overview](https://www.rigol.com/dam/global/downloads/brochures/en/program-guide/oscilloscopes/DHO10004000_ProgrammingGuide_EN.pdf) |
+| DHO1202U / DHO1204U | 2 / 4 | [DHO1000U user guide, p.10](https://download.rigol.com/en/Manual/Digital%20Oscilloscope/DHO1000/DHO1000U_UserGuide_EN.pdf) |
 | DHO1074, DHO1104, DHO1204, DHO4204, DHO4404, DHO4804 | 4 | [DHO1000/4000 programming guide, document overview](https://www.rigol.com/dam/global/downloads/brochures/en/program-guide/oscilloscopes/DHO10004000_ProgrammingGuide_EN.pdf) |
 | DS2072A, DS2102A, DS2202A, DS2302A, MSO2072A, MSO2102A, MSO2202A, MSO2302A; each also with `-S` | 2 | [Rigol MSO/DS2000A datasheet, p.1](https://www.batronix.com/pdf/Rigol/Datasheet/MSO2000A_DS2000A_Datasheet_EN.pdf) |
 
@@ -77,6 +78,33 @@ also spells the four Plus models with `-Plus`; these are explicit aliases for th
 space-separated names above. Other suffixes are not inferred. The earlier README
 listed `MSO1054Z`, but it is omitted from this registry because the cited model tables
 do not substantiate it.
+
+Additional published models were reviewed on 2026-11-27. These products already
+have manufacturer documentation; the catalog does not contain speculative model
+names. DHO1000U uses the existing DHO driver because Rigol lists it on the
+[DHO1000 product page](https://www.rigol.com/intl/products/oscilloscope/DHO1000.html)
+with the shared DHO1000/4000 programming guide. This mapping is not hardware-verified.
+
+The following newer families have **channel metadata only**, pending dialect
+validation and driver implementation. A DHO or MHO prefix alone does not select
+the existing DHO driver. Digital inputs, external trigger inputs, and generator
+outputs are excluded from the analog channel counts.
+
+| Models | Analog channels | Manufacturer source |
+|---|---:|---|
+| MHO934, MHO954, MHO984 | 4 | [MHO900 product overview and model list](https://www.rigol.com/intl/products/oscilloscope/MHO900.html) |
+| MHO98 special edition | 4 | [MHO98 datasheet, p.6](https://www.rigol.com/dam/global/downloads/brochures/en/data-sheet/oscilloscopes/MHO98-DataSheet.pdf) |
+| MHO2024, MHO2034 | 4 | [MHO2000 programming guide, p.2](https://download.rigol.com/en/Manual/Digital%20Oscilloscope/MHO2000/MHO2000_Programming%20Guide_EN.pdf) |
+| DHO5054, DHO5104 | 4 | [MHO/DHO5000 datasheet, p.9](https://www.rigol.com/dam/global/downloads/brochures/en/data-sheet/oscilloscopes/MHODHO5000_DataSheet.pdf) |
+| DHO5058, DHO5108 | 8 | [MHO/DHO5000 datasheet, p.9](https://www.rigol.com/dam/global/downloads/brochures/en/data-sheet/oscilloscopes/MHODHO5000_DataSheet.pdf) |
+| MHO5054, MHO5104 | 4 | [MHO/DHO5000 datasheet, p.9](https://www.rigol.com/dam/global/downloads/brochures/en/data-sheet/oscilloscopes/MHODHO5000_DataSheet.pdf) |
+| MHO5056, MHO5106 | 6 | [MHO/DHO5000 datasheet, p.9](https://www.rigol.com/dam/global/downloads/brochures/en/data-sheet/oscilloscopes/MHODHO5000_DataSheet.pdf) |
+| DS9202, MSO9402 | 2 | [MSO/DS9000 user guide, p.11](https://www.rigol.com/dam/global/downloads/brochures/en/user-manual/oscillosopes/MSODS9000_UserGuide_EN.pdf) |
+| DS9204, DS9404, DS9604 | 4 | [MSO/DS9000 user guide, p.11](https://www.rigol.com/dam/global/downloads/brochures/en/user-manual/oscillosopes/MSODS9000_UserGuide_EN.pdf) |
+
+Tool schemas consequently advertise CHAN1–CHAN8. Runtime checks still restrict
+each call to the connected model's documented inputs; advertising CHAN8 does not
+imply an eight-channel SCPI driver is implemented.
 
 The scope connects either over your **local network via Ethernet** (rear panel RJ45) or over **USB** (rear panel USB-B device port). LAN is the default; USB is used when `RIGOL_USB` is set (see [Configuration](#configuration)). USB transport has been validated on DS1000Z; DHO support has so far been validated over LAN only.
 

@@ -131,3 +131,33 @@ async def test_mcp_reconnect_refreshes_channel_count(usb_connections, reconnect)
         assert first.cleared == second.cleared == 0
         assert not (await client.call_tool("disconnect", {})).isError
         assert sc._idn is None and second.closed
+
+
+@pytest.mark.parametrize("model,count", [("MHO5106", 6), ("DHO5108", 8)])
+async def test_mcp_reports_extended_channels_without_implying_dialect_support(usb_connections, model, count):
+    channels = tuple(f"CHAN{i}" for i in range(1, count + 1))
+    scope = state_scope(model, channels)
+    usb_connections.append(scope)
+    async with create_connected_server_and_client_session(
+        srv.server, read_timeout_seconds=timedelta(seconds=5)
+    ) as client:
+        listed = await client.list_tools()
+        assert not scope.queries and not scope.written
+        schemas = {tool.name: tool.inputSchema for tool in listed.tools}
+        assert "CHAN8" in schemas["get_waveform"]["properties"]["channel"]["enum"]
+        assert schemas["export_acquisition"]["properties"]["channels"]["maxItems"] == 8
+
+        result = await client.call_tool("get_scope_state", {})
+        assert not result.isError
+        assert tuple(json.loads(result.content[0].text)["channels"]) == channels
+
+        before = list(scope.queries)
+        waveform = await client.call_tool("get_waveform", {"channel": channels[-1]})
+        assert waveform.isError and "No dialect driver matched" in waveform.content[0].text
+        assert scope.queries == before and scope.written == ["*CLS"]
+
+        if count == 6:
+            rejected = await client.call_tool("set_channel", {"channel": "CHAN7", "display": True})
+            assert rejected.isError and "CHAN7 is not available on MHO5106" in rejected.content[0].text
+            assert scope.queries == before and scope.written == ["*CLS"]
+        assert not (await client.call_tool("disconnect", {})).isError
