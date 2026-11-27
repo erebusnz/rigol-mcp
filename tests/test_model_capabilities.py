@@ -123,14 +123,13 @@ def test_known_channel_count_does_not_imply_scpi_driver_support():
 
 
 @pytest.mark.parametrize("model,count", [
-    ("MHO98", 4), ("MHO934", 4), ("MHO2034", 4),
+    ("MHO2034", 4),
     ("DHO5054", 4), ("DHO5108", 8), ("MHO5106", 6),
     ("DS9202", 2), ("MSO9402", 2), ("DS9604", 4),
 ])
 def test_newer_families_report_counts_without_selecting_an_existing_driver(model, count):
     identity = f"RIGOL TECHNOLOGIES,{model},SERIAL,1.0"
-    # In particular, DHO5108 must not select DHO based on its name prefix,
-    # and MHO98 must not be assigned eight channels from its last digit.
+    # In particular, DHO5108 must not select DHO based on its name prefix.
     assert capabilities_for(identity).analog_channel_count == count
     assert sc.set_driver_from_idn(identity) is None
     assert sc._driver is None

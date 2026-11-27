@@ -44,6 +44,22 @@ refreshed after disconnect or communication failure.
 The Plus models also accept the hyphenated spellings listed on
 [Rigol's DS1000Z product page](https://www.rigol.com/intl/products/oscilloscope/DS1000Z.html).
 
+## MHO900 and MHO98
+
+MHO934, MHO954, MHO984, and MHO98 use the shared DHO-style SCPI driver.
+Acquisition information includes sample rate, memory depth setting, acquisition
+type, and averages. RAW memory export, digital waveform inputs, and the signal
+generator are unsupported. Hardware testing is pending.
+
+Scale/offset changes require a displayed channel or `display=true` in the same
+`set_channel` call. To hide the channel, use a subsequent call. This handles
+[MHO98 firmware ignoring vertical settings on hidden channels](https://github.com/zinntikumugai/rigol-oscilloscope-mcp/blob/main/docs/verification/mho98-mvp.md).
+
+Command references: MHO900/MHO98 programming guides in
+[Rigol's downloads](https://www.rigol.com/intl/products/oscilloscope/MHO900.html),
+sections 3.2 (autoset), 3.3 (acquisition), 3.8 (cursors), 3.9 (display),
+3.17 (measurements), and 3.28 (waveforms).
+
 ## Hardware tests
 
 | Model | Connection | Tested functions | Report |

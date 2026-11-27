@@ -61,10 +61,12 @@ def get_acquisition_info(scope) -> dict:
             ["acquisition_memory"] if driver.memory_chunk_points else []),
         "settings": state,
     }
-    if driver.memory_chunk_points:
+    if driver.supports_acquisition_info:
         result.update(driver.acquisition_info(scope))
-    else:
+    if not driver.supports_acquisition_info:
         result["warnings"] = [f"Acquisition metadata/RAW export not implemented for {driver.name}"]
+    elif not driver.memory_chunk_points:
+        result["warnings"] = [f"RAW export not implemented for {driver.name}"]
     return result
 
 

@@ -161,3 +161,64 @@ async def test_mcp_reports_extended_channels_without_implying_dialect_support(us
             assert rejected.isError and "CHAN7 is not available on MHO5106" in rejected.content[0].text
             assert scope.queries == before and scope.written == ["*CLS"]
         assert not (await client.call_tool("disconnect", {})).isError
+
+
+@pytest.mark.parametrize("model", ["MHO98", "MHO984"])
+async def test_mcp_mho900_identification_measurement_waveform_and_limits(usb_connections, tmp_path, model):
+    scope = state_scope(model, ("CHAN1", "CHAN2", "CHAN3", "CHAN4"))
+    scope.responses.update({
+        ":CHAN1:DISP?": "1", ":CHAN4:DISP?": "1",
+        ":MEASure:ITEM? VPP,CHAN4": "2.5",
+        ":MEASure:ITEM? RRDELAY,CHAN1,CHAN4": "1e-6",
+        ":WAV:PRE?": "2,0,3,1,1e-6,0,0,1,0,0", ":WAV:DATA?": "1,2,3\n",
+        ":ACQ:SRAT?": "4e9", ":ACQ:MDEP?": "1e6", ":ACQ:TYPE?": "NORM", ":ACQ:AVER?": "2",
+    })
+    usb_connections.append(scope)
+    async with create_connected_server_and_client_session(
+        srv.server, read_timeout_seconds=timedelta(seconds=5)
+    ) as client:
+        await client.list_tools()
+        assert not scope.queries and not scope.written
+        identity = await client.call_tool("idn", {})
+        assert not identity.isError and "MHO900" in identity.content[0].text
+        assert "['CHAN1', 'CHAN2', 'CHAN3', 'CHAN4']" in identity.content[0].text
+
+        before = (list(scope.queries), list(scope.written))
+        rejected = await client.call_tool("measure", {"channel": "CHAN2", "item": "VARIANCE"})
+        assert rejected.isError and "VARIANCE" in rejected.content[0].text
+        assert "MHO900" in rejected.content[0].text
+        assert (scope.queries, scope.written) == before
+
+        measured = await client.call_tool("measure", {"channel": "CHAN4", "item": "VPP"})
+        assert not measured.isError and "2.5" in measured.content[0].text
+        delay = await client.call_tool("measure_between", {
+            "source1": "CHAN1", "source2": "CHAN4", "item": "RDELAY",
+        })
+        assert not delay.isError and "1e-6" in delay.content[0].text
+        waveform = await client.call_tool("get_waveform", {"channel": "CHAN4", "raw_data": True})
+        assert not waveform.isError
+        assert json.loads(waveform.content[0].text)["voltages_v"] == [1, 2, 3]
+        assert scope.queries.count("*IDN?") == 1
+
+        info = await client.call_tool("get_acquisition_info", {})
+        assert not info.isError
+        metadata = json.loads(info.content[0].text)
+        assert metadata["dialect"] == "MHO900" and metadata["sample_rate_hz"] == 4e9
+        assert metadata["supported_transfer_modes"] == ["screen"]
+
+        before = (list(scope.queries), list(scope.written))
+        rejected = await client.call_tool("export_acquisition", {
+            "channels": ["CHAN1"], "output_dir": str(tmp_path),
+        })
+        assert rejected.isError and "unsupported for MHO900" in rejected.content[0].text
+        rejected = await client.call_tool("set_channel", {"channel": "CHAN5", "display": True})
+        assert rejected.isError and f"not available on {model}" in rejected.content[0].text
+        assert (scope.queries, scope.written) == before
+        assert not list(tmp_path.iterdir())
+
+        rejected = await client.call_tool("set_channel", {"channel": "CHAN2", "scale_v_div": 0.5})
+        assert rejected.isError and "display=true" in rejected.content[0].text
+        assert scope.written == before[1]
+        assert scope.queries == before[0] + [":CHAN2:DISP?"]
+        assert not (await client.call_tool("disconnect", {})).isError
+        assert scope.closed and sc._driver is None

@@ -1,6 +1,6 @@
 # rigol-mcp
 
-MCP server for controlling **Rigol DS1000Z and DHO series oscilloscopes** over LAN or USB. Exposes the scope as a set of tools that Claude (or any MCP client) can call to take measurements, configure the instrument, and capture screenshots — entirely through natural language.
+MCP server for controlling **Rigol DS1000Z, DHO, and MHO900/MHO98 oscilloscopes** over LAN or USB. Exposes the scope as a set of tools that Claude (or any MCP client) can call to take measurements, configure the instrument, and capture screenshots — entirely through natural language.
 
 ![Scope](media/example.png)
 
@@ -19,7 +19,8 @@ Support is selected by exact model name and covers analog channels.
 | DS1000Z / MSO1000Z | 4 | Control, measurements, screenshots, screen waveforms, and RAW acquisition export |
 | DHO800 / DHO900 / DHO1000 / DHO1000U / DHO4000 | 2 or 4 | Control, measurements, screenshots, and screen waveforms |
 | DS2000A / MSO2000A | 2 | Model and channel information only |
-| MHO900 / MHO98 / MHO2000 | 4 | Model and channel information only |
+| MHO900 / MHO98 | 4 | Control, measurements, screenshots, screen waveforms, and acquisition information |
+| MHO2000 | 4 | Model and channel information only |
 | DHO5000 / MHO5000 / MSO/DS9000 | 2, 4, 6, or 8 | Model and channel information only |
 
 See [hardware support](docs/hardware-support.md) for exact models, manufacturer
@@ -31,7 +32,7 @@ The scope connects either over your **local network via Ethernet** (rear panel R
 
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/)
-- A Rigol DS1000Z (LAN or USB) or DHO series scope (LAN) connected to your computer
+- A supported Rigol scope connected to your computer
 - For LAN: SCPI over TCP/IP enabled on the scope (on by default)
 - For USB: a VISA driver on the scope's USB interface — either the native USBTMC driver
   (e.g. from Rigol UltraSigma / any NI-VISA runtime) or WinUSB via Zadig

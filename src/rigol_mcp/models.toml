@@ -58,13 +58,13 @@
 "MSO2302A" = { family = "DS2000A", analog_channel_count = 2 }
 "MSO2302A-S" = { family = "DS2000A", analog_channel_count = 2 }
 
-# Families below: channel metadata only.
-
 # MHO900 / MHO98
 "MHO934" = { family = "MHO900", analog_channel_count = 4 }
 "MHO954" = { family = "MHO900", analog_channel_count = 4 }
 "MHO984" = { family = "MHO900", analog_channel_count = 4 }
 "MHO98" = { family = "MHO900", analog_channel_count = 4 }
+
+# Remaining families: channel metadata only.
 
 # MHO2000
 "MHO2024" = { family = "MHO2000", analog_channel_count = 4 }

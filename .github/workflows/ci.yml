@@ -36,4 +36,4 @@ jobs:
       - name: Check installed wheel catalog
         run: |
           uv build
-          uv run --isolated --no-project --with dist/rigol_mcp-*.whl python -I -c "from rigol_mcp.models import capabilities_for; assert capabilities_for('RIGOL,DHO802,SERIAL,1').analog_channel_count == 2; assert capabilities_for('RIGOL,DS1104Z-PLUS,SERIAL,1').analog_channel_count == 4"
+          uv run --isolated --no-project --with dist/rigol_mcp-*.whl python -I -c "from rigol_mcp.models import capabilities_for; from rigol_mcp.drivers import driver_for; assert capabilities_for('RIGOL,DHO802,SERIAL,1').analog_channel_count == 2; assert capabilities_for('RIGOL,DS1104Z-PLUS,SERIAL,1').analog_channel_count == 4; assert driver_for('RIGOL,MHO98,SERIAL,1').name == 'MHO900'"
