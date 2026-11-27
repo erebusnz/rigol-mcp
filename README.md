@@ -21,7 +21,6 @@ Unknown signal (square wave into LCR trap), wrong channel enabled, invalid timeb
 | DS1074Z-S | 4 analog + signal gen | |
 | DS1104Z | 4 analog | 100 MHz |
 | DS1104Z-S | 4 analog + signal gen | |
-| MSO1054Z | 4 analog + 16 digital | MSO variant |
 | MSO1074Z | 4 analog + 16 digital | |
 | MSO1104Z | 4 analog + 16 digital | |
 
@@ -31,7 +30,46 @@ Unknown signal (square wave into LCR trap), wrong channel enabled, invalid timeb
 |---|---|---|
 | DHO924S | 4 analog + signal gen | 250 MHz |
 
-Other DHO models (DHO900/1000/4000 families) likely work with the same SCPI dialect but are not verified.
+Other registered DHO models (DHO800/900/1000/4000 families) use the same driver but are not hardware-verified.
+
+### Model capabilities and channel selection
+
+The server looks up the model field from `*IDN?` in an explicit capability registry.
+State reads query only that model's analog channels. Channel operations reject
+unavailable inputs before sending channel commands, including before enabling either
+source of a two-channel measurement. The `idn` diagnostic reports the model and its
+available analog channels. Identification is cached for the connection and reset on
+disconnect or retry cleanup.
+
+Tool schemas list the union of known channel names without contacting the scope;
+runtime validation checks the connected model. Unknown models are rejected rather
+than assigned a channel count from their model-number digits. Model names are
+case-insensitive, with only explicitly listed spelling aliases accepted.
+
+The following channel counts come from Rigol's published model tables. They describe
+analog inputs; digital inputs and signal-generator outputs are separate. A capability
+entry does **not** establish full SCPI compatibility or hardware verification.
+DS2000A/MSO2000A entries provide channel information only: those families still need
+a dedicated dialect driver for driver-dependent tools such as measurements, waveforms,
+screenshots, and acquisition exports.
+
+| Models | Analog channels | Manufacturer source |
+|---|---:|---|
+| DS1054Z, DS1074Z, DS1074Z-S, DS1104Z, DS1104Z-S | 4 | [Rigol catalog, p.18](https://assets.tequipment.net/assets/1/26/Rigol_-_Test___Measurement_Catalog.pdf) |
+| MSO1074Z, MSO1074Z-S, MSO1104Z, MSO1104Z-S | 4 | [DS1000Z programming guide, document overview](https://www.rigol.com/dam/global/downloads/brochures/en/program-guide/oscilloscopes/DS1000Z_ProgrammingGuide_EN.pdf) |
+| DS1074Z Plus, DS1074Z-S Plus, DS1104Z Plus, DS1104Z-S Plus | 4 | [DS1000Z datasheet](https://www.rigol.com/dam/global/downloads/brochures/en/data-sheet/oscilloscopes/DS1000Z_DataSheet_EN.pdf) |
+| DHO802, DHO812 | 2 | [DHO800 product table](https://www.rigolna.com/products/digital-oscilloscopes/dho800/) |
+| DHO804, DHO814, DHO824 | 4 | [DHO800 user guide, document overview](https://www.rigol.com/dam/global/downloads/brochures/zh/user-manual/oscillosopes/DHO800_UserGuide_CN.pdf) |
+| DHO914, DHO914S, DHO924, DHO924S | 4 | [DHO900 product table](https://www.rigolna.com/products/digital-oscilloscopes/dho900/) |
+| DHO1072, DHO1102, DHO1202 | 2 | [DHO1000/4000 programming guide, document overview](https://www.rigol.com/dam/global/downloads/brochures/en/program-guide/oscilloscopes/DHO10004000_ProgrammingGuide_EN.pdf) |
+| DHO1074, DHO1104, DHO1204, DHO4204, DHO4404, DHO4804 | 4 | [DHO1000/4000 programming guide, document overview](https://www.rigol.com/dam/global/downloads/brochures/en/program-guide/oscilloscopes/DHO10004000_ProgrammingGuide_EN.pdf) |
+| DS2072A, DS2102A, DS2202A, DS2302A, MSO2072A, MSO2102A, MSO2202A, MSO2302A; each also with `-S` | 2 | [Rigol MSO/DS2000A datasheet, p.1](https://www.batronix.com/pdf/Rigol/Datasheet/MSO2000A_DS2000A_Datasheet_EN.pdf) |
+
+Rigol's [DS1000Z product page](https://www.rigol.com/intl/products/oscilloscope/DS1000Z.html)
+also spells the four Plus models with `-Plus`; these are explicit aliases for the
+space-separated names above. Other suffixes are not inferred. The earlier README
+listed `MSO1054Z`, but it is omitted from this registry because the cited model tables
+do not substantiate it.
 
 The scope connects either over your **local network via Ethernet** (rear panel RJ45) or over **USB** (rear panel USB-B device port). LAN is the default; USB is used when `RIGOL_USB` is set (see [Configuration](#configuration)). USB transport has been validated on DS1000Z; DHO support has so far been validated over LAN only.
 

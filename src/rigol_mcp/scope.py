@@ -10,6 +10,8 @@ import time
 
 import pyvisa
 
+from rigol_mcp.models import ModelCapabilities, capabilities_for
+
 from rigol_mcp.drivers import (
     ScopeDriver,
     driver_for,
@@ -61,6 +63,7 @@ _SLOW_OP_TIMEOUT_MS = 30_000
 _rm: pyvisa.ResourceManager | None = None
 _scope: pyvisa.resources.Resource | None = None
 _driver: ScopeDriver | None = None
+_idn: str | None = None  # identity/capabilities belong to this connection, not the driver
 
 
 def _usb_preferred() -> bool:
@@ -228,7 +231,7 @@ def get_scope() -> pyvisa.resources.Resource:
 
 def invalidate_scope() -> None:
     """Close and discard the cached connection so the next call reconnects."""
-    global _scope, _driver
+    global _scope, _driver, _idn
     if _scope is not None:
         try:
             _scope.clear()
@@ -240,6 +243,7 @@ def invalidate_scope() -> None:
             pass
         _scope = None
     _driver = None
+    _idn = None
 
 
 def disconnect_scope() -> dict:
@@ -247,18 +251,43 @@ def disconnect_scope() -> dict:
 
     The caller must hold the server's scope lock. A later tool may reconnect.
     """
-    global _scope, _driver, _rm
+    global _scope, _driver, _rm, _idn
     connected = _scope is not None
     if _scope is not None:
         _scope.close()  # keep the reference and propagate failure if close fails
         _scope = None
     _driver = None
+    _idn = None
     if _rm is not None:
         _rm.close()
         _rm = None
     return {"disconnected": connected, "connected": False,
             "message": "Cached scope access released; a later scope tool may reconnect."
             if connected else "No cached scope connection was open."}
+
+
+def _get_idn(scope: pyvisa.resources.Resource) -> str:
+    global _idn
+    if _idn is None:
+        _idn = scope.query("*IDN?").strip()
+    return _idn
+
+
+def get_capabilities(scope: pyvisa.resources.Resource) -> ModelCapabilities:
+    """Return this connection's documented model capabilities."""
+    return capabilities_for(_get_idn(scope))
+
+
+def validate_analog_channel(scope: pyvisa.resources.Resource, channel: str) -> str:
+    """Normalize a channel and reject unavailable inputs before channel I/O."""
+    channel = channel.upper()
+    model = get_capabilities(scope)
+    if channel not in model.analog_channels:
+        raise ValueError(
+            f"{channel} is not available on {model.model}; "
+            f"available analog channels: {', '.join(model.analog_channels)}"
+        )
+    return channel
 
 
 def get_driver(scope: pyvisa.resources.Resource) -> ScopeDriver:
@@ -268,7 +297,7 @@ def get_driver(scope: pyvisa.resources.Resource) -> ScopeDriver:
     """
     global _driver
     if _driver is None:
-        _driver = driver_for(scope.query("*IDN?"))
+        _driver = driver_for(_get_idn(scope))
     return _driver
 
 
@@ -279,7 +308,9 @@ def set_driver_from_idn(idn_str: str) -> ScopeDriver | None:
     they've just queried ``*IDN?`` themselves (the ``idn`` tool, for example).
     Returns the selected driver, or None if no driver matched.
     """
-    global _driver
+    global _driver, _idn
+    _idn = idn_str.strip()
+    _driver = None
     try:
         _driver = driver_for(idn_str)
     except RuntimeError:
@@ -451,6 +482,14 @@ def connection_info() -> dict:
         # query *IDN? here — connection_info must remain I/O-free even when the device
         # has gone unresponsive.
         info["driver"]   = _driver.name if _driver is not None else "(not detected yet)"
+        if _idn is not None:
+            try:
+                model = capabilities_for(_idn)
+            except RuntimeError:
+                info["model_capabilities"] = "(unknown model)"
+            else:
+                info["model"] = model.model
+                info["analog_channels"] = list(model.analog_channels)
     else:
         info["session"] = "not yet opened"
     return info
@@ -482,8 +521,10 @@ def measure(scope: pyvisa.resources.Resource, channel: str, item: str) -> str:
         raise ValueError(f"'{item}' requires two sources — use measure_between()")
     if it not in MEASURE_ITEMS:
         raise ValueError(f"Unknown item '{item}'. Valid: {sorted(MEASURE_ITEMS)}")
+    ch = validate_analog_channel(scope, ch)
+    driver = get_driver(scope)
     note = ensure_channel_displayed(scope, ch)
-    get_driver(scope).register_measure_item(scope, it, ch)
+    driver.register_measure_item(scope, it, ch)
     value = annotate_measurement_value(scope.query(f":MEASure:ITEM? {it},{ch}").strip())
     if note:
         value += f"\n⚠ {note}"
@@ -502,13 +543,13 @@ def measure_between(
     use a different naming the driver maps/validates them (e.g. DHO's rising/falling matrix,
     where RDELAY→RRDELAY etc. and RFDELAY/FRDELAY are also accepted verbatim).
 
-    source1/source2: CHAN1–CHAN4.
+    source1/source2 must be analog channels available on the connected model.
     Returns the raw value string (delay in seconds, phase in degrees).
     """
     driver = get_driver(scope)
     it = driver.resolve_two_source_item(item)
-    s1 = source1.upper()
-    s2 = source2.upper()
+    s1 = validate_analog_channel(scope, source1)
+    s2 = validate_analog_channel(scope, source2)
     notes = [n for src in (s1, s2) if (n := ensure_channel_displayed(scope, src))]
     driver.register_measure_item(scope, it, s1, s2)
     value = annotate_measurement_value(scope.query(f":MEASure:ITEM? {it},{s1},{s2}").strip())
@@ -539,6 +580,7 @@ def ensure_channel_displayed(scope: pyvisa.resources.Resource, channel: str) -> 
     ch = channel.upper()
     if not ch.startswith("CHAN"):
         return None
+    ch = validate_analog_channel(scope, ch)
     if scope.query(f":{ch}:DISP?").strip() not in ("0", "OFF"):
         return None
     scope.write(f":{ch}:DISP ON")
@@ -569,6 +611,7 @@ def annotate_measurement_value(value: str) -> str:
 
 def get_scope_state(scope: pyvisa.resources.Resource) -> dict:
     """Return a snapshot of the scope's current configuration."""
+    channels = get_capabilities(scope).analog_channels
     state: dict = {}
 
     state["timebase"] = {
@@ -578,8 +621,7 @@ def get_scope_state(scope: pyvisa.resources.Resource) -> dict:
     }
 
     state["channels"] = {}
-    for i in range(1, 5):
-        ch = f"CHAN{i}"
+    for ch in channels:
         state["channels"][ch] = {
             "display":    scope.query(f":{ch}:DISP?").strip(),
             "scale_v_div": scope.query(f":{ch}:SCAL?").strip(),
@@ -619,7 +661,7 @@ def set_channel(
     both DS1000Z and DHO — writing SCAL first would cause a subsequent
     PROB change to multiply it and land at the wrong V/div.
     """
-    ch = channel.upper()
+    ch = validate_analog_channel(scope, channel)
     if display is not None:
         scope.write(f":{ch}:DISP {'ON' if display else 'OFF'}")
     if probe is not None:
@@ -656,7 +698,9 @@ def set_trigger(
     slope: str | None = None,
     level: float | None = None,
 ) -> None:
-    """Configure edge trigger. source: CHAN1–CHAN4, EXT. slope: POS, NEG, RFAL."""
+    """Configure edge trigger; analog sources must exist on the connected model."""
+    if source is not None and source.upper().startswith("CHAN"):
+        source = validate_analog_channel(scope, source)
     scope.write(":TRIGger:MODE EDGE")
     if source is not None:
         scope.write(f":TRIGger:EDGE:SOURce {source.upper()}")
@@ -674,14 +718,15 @@ def get_waveform(scope: pyvisa.resources.Resource, channel: str) -> dict:
     Returns time/voltage arrays plus summary statistics.
     Stop or single-trigger the scope first for consistent data.
     """
-    ch = channel.upper()
+    ch = validate_analog_channel(scope, channel)
+    driver = get_driver(scope)
     warnings = []
     if note := ensure_channel_displayed(scope, ch):
         warnings.append(note)
     scope.write(f":WAV:SOUR {ch}")
     scope.write(":WAV:MODE NORM")
     scope.write(":WAV:FORM ASC")
-    get_driver(scope).prepare_waveform(scope)
+    driver.prepare_waveform(scope)
 
     pre_str = scope.query(":WAV:PRE?").strip()
     pre = pre_str.split(",")
