@@ -30,7 +30,26 @@ Unknown signal (square wave into LCR trap), wrong channel enabled, invalid timeb
 |---|---|---|
 | DHO924S | 4 analog + signal gen | 250 MHz |
 
-Other registered DHO models (DHO800/900/1000/1000U/4000 families) use the same driver but are not hardware-verified. Newer DHO5000 models have channel metadata only and do not select this driver.
+Registered DHO800/900/1000/1000U/4000 models share the DHO driver. Hardware reports and their limits are listed below; testing one model does not validate the whole family. Newer DHO5000 models have channel metadata only and do not select this driver.
+
+### Recorded hardware reports
+
+These reports describe particular revisions and exercised functions, not complete
+SCPI coverage or a hardware pass for every later change. Offline tests and published
+channel counts are separate from live validation. Reports reviewed on 2026-11-27:
+
+| Model | Report and transport | Recorded coverage and limits |
+|---|---|---|
+| DS1054Z | Maintainer, USB with WinUSB/pyvisa-py; [PR #1 merge report](https://github.com/erebusnz/rigol-mcp/pull/1#issuecomment-4654467429) | Identification, screen waveform, measurement, and screenshot tested end-to-end after the DHO integration. |
+| DS1104Z | Maintainer, USB/pyvisa-py; [PR #8](https://github.com/erebusnz/rigol-mcp/pull/8), earlier [RAW export](https://github.com/erebusnz/rigol-mcp/pull/3) and [recovery/disconnect](https://github.com/erebusnz/rigol-mcp/pull/4) reports | PR #8 exercised identity, four-channel state, acquisition information, invalid-channel rejection, reconnect, and injected-timeout recovery. Earlier reports cover four-channel RAW export and repeated captures. |
+| DHO924S | Contributor `irudoy`, LAN, firmware `00.01.05`; [PR #1 retest](https://github.com/erebusnz/rigol-mcp/pull/1#issuecomment-4650396253) | Acquisition controls, channel/timebase/trigger configuration, measurements with AWG loopback, cursors, and screenshots. The retest found the bare-CSV waveform regression that was fixed before integration. USB was not verified. |
+| DHO804 | Contributor `4pplet`; [PR #7](https://github.com/erebusnz/rigol-mcp/pull/7) | Reports operating a Raspberry Pi CM5 deployment with Caddy HTTPS and Claude Code on a Mac. The scope connection transport, firmware, and per-tool hardware checklist are unspecified; the listed HTTP tests are offline. Record as reported usage. |
+| DS2202A | Contributor report recorded in [PR #5](https://github.com/erebusnz/rigol-mcp/pull/5), USB with NI-VISA | Identification before and after disconnect, predating the revised retry handling. Connection-only evidence; no DS2000A dialect validation or hardware pass for PR #8. |
+| DHO814 | Dave Glover's external `gloveboxes/rigol-mcp` fork, Ethernet, firmware `00.01.05`; [article](https://techcommunity.microsoft.com/blog/educatordeveloperblog/connecting-github-copilot-to-my-oscilloscope/4555545) and [2026-09-10 acceptance report](https://github.com/gloveboxes/rigol-mcp/blob/ffce0bc501ddffcf2f99132c0fb19ebf68bd9dc4/docs/reports/dho814_advanced_mcp_acceptance_report.json) | Reports live signal measurements, cursors, protocol decoding, recording/replay, and RAW transfers. This uses an extended fork; it does not validate upstream behavior or add those features here. Upstream DHO814 remains hardware-unverified. |
+
+Models without a report above remain hardware-unverified in this project. The
+`models.toml` comments preserve the distinction between hardware tests, reported
+usage, connection-only tests, and external-fork evidence.
 
 ### Model capabilities and channel selection
 
