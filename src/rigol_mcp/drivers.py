@@ -7,15 +7,28 @@ is selected from ``*IDN?`` once per connection.
 
 To add support for a new Rigol family:
   1. Subclass :class:`ScopeDriver` below and override the attributes/methods that differ.
-  2. Implement :meth:`matches` so it recognises the family from its ``*IDN?`` string.
-  3. Add an instance to ``_DRIVERS`` (list more specific families before broader ones).
-Nothing in ``scope.py`` should need to change.
+  2. Register documented model capabilities in models.toml with the driver's family name.
+  3. Add an instance to ``_DRIVERS``. Matching uses the exact catalog family, not prefixes.
+Shared command implementations can be inherited independently of model identification.
 
 Drivers are stateless singletons: every method receives the live pyvisa ``scope`` rather
 than holding a reference, so one instance per family is shared across all connections.
 """
 
 import pyvisa
+
+from rigol_mcp.models import capabilities_for
+
+
+_COMMON_SINGLE_SOURCE_ITEMS = frozenset({
+    "VMAX", "VMIN", "VPP", "VTOP", "VBASE", "VAMP", "VAVG", "VRMS",
+    "OVERSHOOT", "PRESHOOT", "MAREA", "MPAREA",
+    "VUPPER", "VMID", "VLOWER", "PVRMS",
+    "PERIOD", "FREQUENCY", "RTIME", "FTIME",
+    "PWIDTH", "NWIDTH", "PDUTY", "NDUTY",
+    "TVMAX", "TVMIN", "PSLEWRATE", "NSLEWRATE",
+    "PPULSES", "NPULSES", "PEDGES", "NEDGES",
+})
 
 
 class MemoryTransferError(RuntimeError):
@@ -52,15 +65,28 @@ def time_to_screen_x(scope: pyvisa.resources.Resource, time_s: float) -> int:
 class ScopeDriver:
     """Base class for a Rigol scope family. Subclasses override only what differs.
 
-    The base intentionally leaves the command-producing methods abstract so a partially
-    implemented driver fails loudly rather than silently sending DS1000Z commands.
+    Command-producing methods require an override or explicit capability opt-in so a
+    partially implemented driver cannot silently send DS1000Z commands.
     """
 
     name: str = "generic"
     memory_chunk_points: int = 0  # zero means full-memory export is unsupported
+    supports_acquisition_info: bool = False
+    single_source_items: frozenset[str] = frozenset()
 
     def acquisition_info(self, scope) -> dict:
-        raise NotImplementedError(f"Acquisition information is unsupported for {self.name}")
+        if not self.supports_acquisition_info:
+            raise NotImplementedError(f"Acquisition information is unsupported for {self.name}")
+        return {
+            "sample_rate_hz": float(scope.query(":ACQ:SRAT?")),
+            "memory_depth_setting": scope.query(":ACQ:MDEP?").strip(),
+            "acquisition_type": scope.query(":ACQ:TYPE?").strip(),
+            "averages": scope.query(":ACQ:AVER?").strip(),
+        }
+
+    def validate_channel_configuration(self, scope, channel: str, *,
+                                       display: bool | None, vertical: bool) -> None:
+        """Check family-specific prerequisites before any configuration writes."""
 
     def prepare_memory(self, scope, channel: str) -> None:
         raise NotImplementedError(f"RAW export is unsupported for {self.name}")
@@ -75,7 +101,10 @@ class ScopeDriver:
     @classmethod
     def matches(cls, idn: str) -> bool:
         """True if this driver handles the scope identified by ``idn`` (an ``*IDN?`` string)."""
-        return False
+        try:
+            return capabilities_for(idn).family == cls.name
+        except RuntimeError:
+            return False
 
     # --- screenshot ---
     def screenshot_query(self) -> str:
@@ -117,6 +146,14 @@ class ScopeDriver:
         raise NotImplementedError
 
     # --- measurement ---
+    def validate_measure_item(self, item: str) -> None:
+        """Validate a single-source item before channel or measurement I/O."""
+        if item not in self.single_source_items:
+            raise ValueError(
+                f"'{item}' is not a valid single-source item for {self.name}. "
+                f"Valid: {sorted(self.single_source_items)}"
+            )
+
     def register_measure_item(self, scope: pyvisa.resources.Resource,
                               item: str, *sources: str) -> None:
         """Activate ``item`` for the given source channel(s) so the next
@@ -142,14 +179,8 @@ class DS1000ZDriver(ScopeDriver):
 
     name = "DS1000Z"
     memory_chunk_points = 250_000
-
-    def acquisition_info(self, scope) -> dict:
-        return {
-            "sample_rate_hz": float(scope.query(":ACQ:SRAT?")),
-            "memory_depth_setting": scope.query(":ACQ:MDEP?").strip(),
-            "acquisition_type": scope.query(":ACQ:TYPE?").strip(),
-            "averages": scope.query(":ACQ:AVER?").strip(),
-        }
+    supports_acquisition_info = True
+    single_source_items = _COMMON_SINGLE_SOURCE_ITEMS | {"VARIANCE"}
 
     def prepare_memory(self, scope, channel: str) -> None:
         from rigol_mcp.scope import check_scpi_error
@@ -185,11 +216,6 @@ class DS1000ZDriver(ScopeDriver):
         return data
     two_source_items = frozenset({"RDELAY", "FDELAY", "RPHASE", "FPHASE"})
 
-    @classmethod
-    def matches(cls, idn: str) -> bool:
-        up = idn.upper()
-        return "DS1" in up or "MSO1" in up
-
     def screenshot_query(self) -> str:
         return ":DISPlay:DATA? ON,OFF,PNG"  # color, invert, format
 
@@ -220,13 +246,16 @@ class DS1000ZDriver(ScopeDriver):
         scope.write(f":MEASure:ITEM {','.join((item, *sources))}")
 
 
-class DHODriver(ScopeDriver):
-    """Rigol DHO series (12-bit)."""
+class ModernRigolDriver(ScopeDriver):
+    """Shared DHO and MHO900 SCPI commands; this base is never registered.
 
-    name = "DHO"
-    # DHO has no plain RDELay/FDELay/RPHase/FPHase. It exposes a 4-way matrix combining
+    MHO900/MHO98 programming guides: acquisition section 3.3, cursors 3.8,
+    display 3.9, measurements 3.17, and waveforms 3.28. See docs/hardware-support.md for sources.
+    """
+
+    # These families expose a 4-way matrix combining
     # rising/falling edges on each source. DS1000Z names (rise-to-rise, fall-to-fall) map
-    # to the homogeneous pairs; rise-to-fall and fall-to-rise are DHO-only.
+    # to the homogeneous pairs; rise-to-fall and fall-to-rise are also available.
     two_source_items = frozenset({
         "RRDELAY", "RFDELAY", "FRDELAY", "FFDELAY",
         "RRPHASE", "RFPHASE", "FRPHASE", "FFPHASE",
@@ -236,12 +265,8 @@ class DHODriver(ScopeDriver):
         "RPHASE": "RRPHASE", "FPHASE": "FFPHASE",
     }
 
-    @classmethod
-    def matches(cls, idn: str) -> bool:
-        return "DHO" in idn.upper()
-
     def screenshot_query(self) -> str:
-        return ":DISPlay:DATA? PNG"  # single param; DHO rejects the 3-param DS1000Z form
+        return ":DISPlay:DATA? PNG"  # one format argument, unlike DS1000Z
 
     def autoscale(self, scope: pyvisa.resources.Resource) -> None:
         # DHO rejects bare :AUToscale (-109 "Missing parameter"); its action is :AUToset,
@@ -250,13 +275,13 @@ class DHODriver(ScopeDriver):
         scope.query("*OPC?")
 
     def prepare_waveform(self, scope: pyvisa.resources.Resource) -> None:
-        # DHO :WAV:STOP defaults to 2, not the full screen buffer, so PRE?/DATA? return a
-        # 2-point slice unless the range is set. 1000 is the NORM max; the scope clamps.
+        # Set the documented 1000-point NORM range explicitly. A DHO has been observed
+        # retaining a two-point slice; do not depend on firmware's current range.
         scope.write(":WAV:STAR 1")
         scope.write(":WAV:STOP 1000")
 
     def read_waveform_data(self, scope: pyvisa.resources.Resource) -> str:
-        # DHO returns bare CSV with no IEEE 488.2 block header, unlike DS1000Z. ASCII
+        # DHO/MHO900 return bare CSV with no IEEE 488.2 block header, unlike DS1000Z. ASCII
         # waveform data never contains 0x0A, so reading to the newline terminator is
         # safe on every backend (no bulk-IN-hang risk that the byte-count reader exists
         # to avoid for binary blocks).
@@ -279,11 +304,47 @@ class DHODriver(ScopeDriver):
         scope.write(f":MEASure:STATistic:ITEM {','.join((item, *sources))}")
 
 
+class DHODriver(ModernRigolDriver):
+    """Registered DHO800/900/1000/1000U/4000 models."""
+
+    name = "DHO"
+    single_source_items = _COMMON_SINGLE_SOURCE_ITEMS | {"VARIANCE"}
+
+
+class MHO900Driver(ModernRigolDriver):
+    """MHO934, MHO954, MHO984 and MHO98; analog screen transfers only.
+
+    RAW memory export and digital waveform inputs remain unsupported.
+    """
+
+    name = "MHO900"
+    supports_acquisition_info = True
+    single_source_items = _COMMON_SINGLE_SOURCE_ITEMS
+
+    def validate_channel_configuration(self, scope, channel, *, display, vertical):
+        # MHO98 firmware 00.01.00 has been reported to silently ignore SCAL/OFFS
+        # while the channel is hidden. Require explicit enabling before those writes.
+        # Reference: docs/hardware-support.md, MHO900 and MHO98 compatibility notes.
+        if not vertical or display is True:
+            return
+        if display is False or scope.query(f":{channel}:DISP?").strip().upper() not in ("1", "ON"):
+            raise ValueError(
+                f"{self.name} scale/offset changes require {channel} to be displayed. "
+                "Set display=true with the vertical settings, then hide the channel "
+                "in a separate call if needed."
+            )
+
+
 # Registry: checked in order, first match wins. An identity matched by no driver is an
 # error (see driver_for) — we do not guess a dialect for an unknown instrument.
 DS1000Z = DS1000ZDriver()
 DHO = DHODriver()
-_DRIVERS: tuple[ScopeDriver, ...] = (DHO, DS1000Z)
+MHO900 = MHO900Driver()
+_DRIVERS: tuple[ScopeDriver, ...] = (DHO, DS1000Z, MHO900)
+
+ALL_SINGLE_SOURCE_ITEMS: frozenset[str] = frozenset().union(
+    *(d.single_source_items for d in _DRIVERS)
+)
 
 # Union of every family's two-source items — used to reject two-source items passed to the
 # single-source measure(), and to advertise the full enum in the tool schema.

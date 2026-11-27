@@ -27,6 +27,7 @@ from mcp.server.stdio import stdio_server
 
 from rigol_mcp.waveform_analysis import describe_waveform as _describe_waveform
 from rigol_mcp.memory_export import get_acquisition_info, export_acquisition
+from rigol_mcp.models import ANALOG_CHANNELS
 from rigol_mcp.scope import (
     get_scope, invalidate_scope, disconnect_scope, usb_in_use, active_backend,
     screenshot_png,
@@ -128,9 +129,9 @@ async def list_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object", "additionalProperties": False,
                 "properties": {
-                    "channels": {"type": "array", "minItems": 1, "maxItems": 4,
+                    "channels": {"type": "array", "minItems": 1, "maxItems": len(ANALOG_CHANNELS),
                                  "uniqueItems": True, "items": {"type": "string",
-                                 "enum": ["CHAN1", "CHAN2", "CHAN3", "CHAN4"]}},
+                                 "enum": list(ANALOG_CHANNELS)}},
                     "output_dir": {"type": "string", "description": "Local parent directory; "
                                    "defaults to RIGOL_WAVEFORM_DIR or waveforms/. A unique export "
                                    "subdirectory is created; existing captures are never overwritten."},
@@ -158,7 +159,8 @@ async def list_tools() -> list[types.Tool]:
                 "Identify the instrument and report connection details. "
                 "Always returns the connection block (transport, RIGOL_USB/RIGOL_IP env "
                 "vars, backend hint, resource string, session state, and the detected "
-                "dialect driver — DS1000Z, DHO, …) followed by the scope's *IDN? string. "
+                "dialect driver — DS1000Z, DHO, …), documented model and available analog "
+                "channels, followed by the scope's *IDN? string. "
                 "If the *IDN? query fails, the connection block is still returned with "
                 "the error — use it to spot LAN-vs-USB misconfig or an unreachable IP "
                 "before assuming the scope itself is the problem. "
@@ -182,9 +184,11 @@ async def list_tools() -> list[types.Tool]:
             name="set_channel",
             description=(
                 "Configure a channel. Only specified parameters are changed. "
-                "channel: CHAN1–CHAN4. "
+                "channel must exist on the connected model; idn reports available analog channels. "
                 "scale_v_div: V/div. offset_v: volts. coupling: AC, DC, or GND. "
                 "probe: attenuation ratio (1, 10, 100, …). "
+                "On MHO900/MHO98, scale/offset changes require a displayed channel or display=true "
+                "in this call; hide the channel in a separate call afterward if needed. "
                 "Parameter names match get_scope_state output for easy round-tripping. "
                 "Returns the resulting channel configuration. "
                 "Do not call concurrently with any other rigol tool."
@@ -192,7 +196,7 @@ async def list_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "channel":    {"type": "string", "enum": ["CHAN1", "CHAN2", "CHAN3", "CHAN4"]},
+                    "channel":    {"type": "string", "enum": list(ANALOG_CHANNELS)},
                     "display":    {"type": "boolean", "description": "Turn channel on/off"},
                     "scale_v_div": {"type": ["number", "string"], "description": "Vertical scale in V/div"},
                     "offset_v":   {"type": ["number", "string"], "description": "Vertical offset in volts"},
@@ -228,7 +232,7 @@ async def list_tools() -> list[types.Tool]:
             name="set_trigger",
             description=(
                 "Configure edge trigger. "
-                "source: CHAN1–CHAN4 or EXT. "
+                "source: an analog channel available on the connected model, or EXT. "
                 "slope: POS (rising), NEG (falling), or RFAL (either). "
                 "level: trigger level in volts. "
                 "Returns the resulting trigger configuration. "
@@ -254,14 +258,14 @@ async def list_tools() -> list[types.Tool]:
                 "On DHO, keep acquisition running — the DHO measurement engine only populates "
                 "item values from live acquisitions; some items (VMAX/VMIN/VTOP/FREQUENCY/…) "
                 "return 9.9E37 if first queried on a stopped scope. "
-                "channel: CHAN1–CHAN4. "
+                "channel must exist on the connected model; idn reports available analog channels. "
                 "item: VMAX, VMIN, VPP, "
                 "VTOP (pulse top flat level, histogram-derived — not the same as VMAX), "
                 "VBASE (pulse base flat level — not the same as VMIN), "
                 "VAMP (=VTOP−VBASE — not the same as VPP=VMAX−VMIN), "
                 "VAVG, VRMS (RMS over screen window), PVRMS (RMS over one period), "
                 "VUPPER/VMID/VLOWER (timing thresholds at 90%/50%/10% of VAMP by default), "
-                "VARIANCE (statistical variance of voltage samples), "
+                "VARIANCE (statistical variance of voltage samples; unavailable on MHO900/MHO98), "
                 "FREQUENCY, PERIOD, PWIDTH, NWIDTH, PDUTY, NDUTY, "
                 "RTIME, FTIME, OVERSHOOT, PRESHOOT, "
                 "PSLEWRATE, NSLEWRATE (slew rate, V/s), "
@@ -279,7 +283,7 @@ async def list_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "channel": {"type": "string", "enum": ["CHAN1", "CHAN2", "CHAN3", "CHAN4"]},
+                    "channel": {"type": "string", "enum": list(ANALOG_CHANNELS)},
                     "item":    {"type": "string", "description": "Measurement item (e.g. FREQUENCY, VPP, VRMS)"},
                 },
                 "required": ["channel", "item"],
@@ -290,11 +294,12 @@ async def list_tools() -> list[types.Tool]:
             description=(
                 "Query a two-source delay or phase measurement between two channels. "
                 "source1 is the reference channel, source2 is the measured channel. "
+                "Both must be analog channels available on the connected model. "
                 "DS1000Z items: RDELAY (rising-edge delay, seconds), FDELAY (falling-edge delay, seconds), "
                 "RPHASE (rising-edge phase, degrees), FPHASE (falling-edge phase, degrees). "
-                "DHO series exposes a 4-way matrix: RRDELAY/RFDELAY/FRDELAY/FFDELAY and "
+                "DHO and MHO900/MHO98 expose a 4-way matrix: RRDELAY/RFDELAY/FRDELAY/FFDELAY and "
                 "RRPHASE/RFPHASE/FRPHASE/FFPHASE (first letter = source1 edge, second = source2 edge). "
-                "On DHO the DS1000Z names are auto-mapped to their homogeneous equivalents "
+                "On those families the DS1000Z names are auto-mapped to their homogeneous equivalents "
                 "(RDELAY→RRDELAY, FDELAY→FFDELAY, RPHASE→RRPHASE, FPHASE→FFPHASE). "
                 "For stable readings: on DS1000Z, stop acquisition first. "
                 "On DHO, keep acquisition running (see `measure` for details). "
@@ -305,8 +310,8 @@ async def list_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "source1": {"type": "string", "enum": ["CHAN1", "CHAN2", "CHAN3", "CHAN4"], "description": "Reference channel"},
-                    "source2": {"type": "string", "enum": ["CHAN1", "CHAN2", "CHAN3", "CHAN4"], "description": "Measured channel"},
+                    "source1": {"type": "string", "enum": list(ANALOG_CHANNELS), "description": "Reference channel"},
+                    "source2": {"type": "string", "enum": list(ANALOG_CHANNELS), "description": "Measured channel"},
                     "item":    {"type": "string", "enum": [
                         "RDELAY", "FDELAY", "RPHASE", "FPHASE",
                         "RRDELAY", "RFDELAY", "FRDELAY", "FFDELAY",
@@ -320,6 +325,7 @@ async def list_tools() -> list[types.Tool]:
             name="get_waveform",
             description=(
                 "Download and analyse the current waveform for a channel (NORM screen buffer, up to ~1000–1200 points depending on scope). "
+                "The channel must exist on the connected model. "
                 "Preferred over screenshot for inspecting the trace — the text analysis is "
                 "cheaper and easier to reason over than an image. "
                 "Stop or single-trigger the scope first for consistent data. "
@@ -339,7 +345,7 @@ async def list_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "channel":  {"type": "string", "enum": ["CHAN1", "CHAN2", "CHAN3", "CHAN4"]},
+                    "channel":  {"type": "string", "enum": list(ANALOG_CHANNELS)},
                     "raw_data": {"type": "boolean", "description": "Return raw time/voltage JSON arrays instead of text analysis (default false)"},
                 },
                 "required": ["channel"],

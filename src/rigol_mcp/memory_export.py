@@ -14,7 +14,10 @@ from pathlib import Path
 import pyvisa
 
 from rigol_mcp.drivers import MemoryTransferError
-from rigol_mcp.scope import get_driver, get_scope_state, check_scpi_error, invalidate_scope
+from rigol_mcp.scope import (
+    get_driver, get_scope_state, check_scpi_error, invalidate_scope, validate_analog_channel,
+)
+from rigol_mcp.models import ANALOG_CHANNELS
 
 
 class _ExportSession:
@@ -58,10 +61,12 @@ def get_acquisition_info(scope) -> dict:
             ["acquisition_memory"] if driver.memory_chunk_points else []),
         "settings": state,
     }
-    if driver.memory_chunk_points:
+    if driver.supports_acquisition_info:
         result.update(driver.acquisition_info(scope))
-    else:
+    if not driver.supports_acquisition_info:
         result["warnings"] = [f"Acquisition metadata/RAW export not implemented for {driver.name}"]
+    elif not driver.memory_chunk_points:
+        result["warnings"] = [f"RAW export not implemented for {driver.name}"]
     return result
 
 
@@ -106,9 +111,11 @@ def _export_acquisition(scope, channels=None, output_dir=None) -> dict:
     """Export complete records; intentionally no stop, rearm, or range arguments."""
     if channels is not None:
         if (not isinstance(channels, list) or not channels
-                or any(ch not in ("CHAN1", "CHAN2", "CHAN3", "CHAN4") for ch in channels)
+                or any(ch not in ANALOG_CHANNELS for ch in channels)
                 or len(set(channels)) != len(channels)):
-            raise ValueError("channels must be a nonempty unique list of CHAN1–CHAN4")
+            raise ValueError(f"channels must be a nonempty unique list drawn from {ANALOG_CHANNELS}")
+        for channel in channels:
+            validate_analog_channel(scope, channel)
     driver = get_driver(scope)
     if not driver.memory_chunk_points:
         raise ValueError(f"Acquisition-memory export unsupported for {driver.name}; no screen fallback")

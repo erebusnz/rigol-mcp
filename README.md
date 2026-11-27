@@ -1,6 +1,6 @@
 # rigol-mcp
 
-MCP server for controlling **Rigol DS1000Z and DHO series oscilloscopes** over LAN or USB. Exposes the scope as a set of tools that Claude (or any MCP client) can call to take measurements, configure the instrument, and capture screenshots — entirely through natural language.
+MCP server for controlling **Rigol DS1000Z, DHO, and MHO900/MHO98 oscilloscopes** over LAN or USB. Exposes the scope as a set of tools that Claude (or any MCP client) can call to take measurements, configure the instrument, and capture screenshots — entirely through natural language.
 
 ![Scope](media/example.png)
 
@@ -12,26 +12,19 @@ Unknown signal (square wave into LCR trap), wrong channel enabled, invalid timeb
 
 ## Supported Hardware
 
-**Rigol DS1000Z / MSO1000Z series (8-bit):**
+Support is selected by exact model name and covers analog channels.
 
-| Model | Channels | Notes |
+| Rigol series | Analog channels | Implemented support |
 |---|---|---|
-| DS1054Z | 4 analog | Most common, 50 MHz |
-| DS1074Z | 4 analog | 70 MHz |
-| DS1074Z-S | 4 analog + signal gen | |
-| DS1104Z | 4 analog | 100 MHz |
-| DS1104Z-S | 4 analog + signal gen | |
-| MSO1054Z | 4 analog + 16 digital | MSO variant |
-| MSO1074Z | 4 analog + 16 digital | |
-| MSO1104Z | 4 analog + 16 digital | |
+| DS1000Z / MSO1000Z | 4 | Control, measurements, screenshots, screen waveforms, and RAW acquisition export |
+| DHO800 / DHO900 / DHO1000 / DHO1000U / DHO4000 | 2 or 4 | Control, measurements, screenshots, and screen waveforms |
+| DS2000A / MSO2000A | 2 | Model and channel information only |
+| MHO900 / MHO98 | 4 | Control, measurements, screenshots, screen waveforms, and acquisition information |
+| MHO2000 | 4 | Model and channel information only |
+| DHO5000 / MHO5000 / MSO/DS9000 | 2, 4, 6, or 8 | Model and channel information only |
 
-**Rigol DHO series (12-bit):**
-
-| Model | Channels | Notes |
-|---|---|---|
-| DHO924S | 4 analog + signal gen | 250 MHz |
-
-Other DHO models (DHO900/1000/4000 families) likely work with the same SCPI dialect but are not verified.
+See [hardware support](docs/hardware-support.md) for exact models, manufacturer
+references, and hardware tests.
 
 The scope connects either over your **local network via Ethernet** (rear panel RJ45) or over **USB** (rear panel USB-B device port). LAN is the default; USB is used when `RIGOL_USB` is set (see [Configuration](#configuration)). USB transport has been validated on DS1000Z; DHO support has so far been validated over LAN only.
 
@@ -39,7 +32,7 @@ The scope connects either over your **local network via Ethernet** (rear panel R
 
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/)
-- A Rigol DS1000Z (LAN or USB) or DHO series scope (LAN) connected to your computer
+- A supported Rigol scope connected to your computer
 - For LAN: SCPI over TCP/IP enabled on the scope (on by default)
 - For USB: a VISA driver on the scope's USB interface — either the native USBTMC driver
   (e.g. from Rigol UltraSigma / any NI-VISA runtime) or WinUSB via Zadig
@@ -93,6 +86,8 @@ RIGOL_IP=192.168.1.123
 | `RIGOL_IP` | (required for LAN) | Scope IP address |
 | `RIGOL_USB` | (unset) | Set to `1` to connect over USB instead of LAN. The first Rigol USB scope is found automatically. |
 | `RIGOL_USB_SERIAL` | (unset) | When several Rigol scopes are on USB, pin a specific one by serial number. |
+| `RIGOL_USB_RESOURCE` | (unset) | Full Rigol USB VISA instrument address. With `RIGOL_USB=1`, disables device discovery and overrides `RIGOL_USB_SERIAL`. |
+| `RIGOL_USB_SKIP_CLEAR` | (unset) | Set to `1` to skip VISA device clear during USB connection setup and retry cleanup if that operation hangs. |
 | `RIGOL_ENABLE_SEND_RAW` | (unset) | Set to `1` to enable the `send_raw` tool (arbitrary SCPI). Off by default — see [Tools](#tools). |
 | `RIGOL_SCREENSHOT_DIR` | `screenshots/` | Directory for saved PNG screenshots |
 | `RIGOL_WAVEFORM_DIR` | `waveforms/` | Parent directory for full acquisition exports |
@@ -107,6 +102,29 @@ on USB (vendor ID `0x1AB1`) and connects to it. If more than one scope is connec
 RIGOL_USB=1
 # RIGOL_USB_SERIAL=DS1ZA000000000   # only needed if more than one scope is on USB
 ```
+
+To connect directly, copy the scope's full USB VISA instrument address from your
+VISA test panel into `RIGOL_USB_RESOURCE`:
+
+```
+RIGOL_USB=1
+RIGOL_USB_RESOURCE=USB0::0x1AB1::0x04CE::DS1ZA000000000::INSTR
+```
+
+Replace the example with your scope's actual address. A nonempty address bypasses
+VISA resource discovery on every connection and reconnect. Backend selection stays
+automatic, but each backend only attempts that address; a failed open never falls
+back to discovering another scope. `RIGOL_USB_SERIAL` is ignored in this mode.
+Leave `RIGOL_USB_RESOURCE` unset or blank to use automatic discovery. It has no
+effect on LAN connections.
+
+If the scope hangs during VISA device clear, set `RIGOL_USB_SKIP_CLEAR=1` alongside
+`RIGOL_USB=1`. This skips the server's device-clear calls when opening a USB session
+and cleaning up a failed session before reconnecting. It works with either automatic
+discovery or a direct address. Sessions are still closed during cleanup, and the
+SCPI `*CLS` command is still sent when connecting. The `idn` diagnostic reports
+whether skipping device clear is enabled. Leave the setting unset, blank, or set to
+`0`, `false`, `no`, or `off` for the usual clear behavior. LAN connections ignore it.
 
 #### Windows USB instructions
 

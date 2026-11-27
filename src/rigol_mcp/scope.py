@@ -10,9 +10,12 @@ import time
 
 import pyvisa
 
+from rigol_mcp.models import ModelCapabilities, capabilities_for
+
 from rigol_mcp.drivers import (
     ScopeDriver,
     driver_for,
+    ALL_SINGLE_SOURCE_ITEMS,
     ALL_TWO_SOURCE_ITEMS,
     # Re-exported so existing callers/tests keep reaching these via rigol_mcp.scope.
     screen_x_to_time,  # noqa: F401
@@ -61,16 +64,26 @@ _SLOW_OP_TIMEOUT_MS = 30_000
 _rm: pyvisa.ResourceManager | None = None
 _scope: pyvisa.resources.Resource | None = None
 _driver: ScopeDriver | None = None
+_idn: str | None = None  # identity/capabilities belong to this connection, not the driver
+
+
+def _env_enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() not in ("", "0", "false", "no", "off")
 
 
 def _usb_preferred() -> bool:
     """True if RIGOL_USB is set to a truthy value, requesting USB transport."""
-    return os.environ.get("RIGOL_USB", "").strip().lower() not in ("", "0", "false", "no", "off")
+    return _env_enabled("RIGOL_USB")
 
 
 def usb_in_use() -> bool:
     """True when the active transport is USB (USBTMC) rather than LAN."""
     return _usb_preferred()
+
+
+def _skip_usb_clear() -> bool:
+    """Whether USB device clear is disabled for connection setup and recovery."""
+    return usb_in_use() and _env_enabled("RIGOL_USB_SKIP_CLEAR")
 
 
 def active_backend() -> str | None:
@@ -153,20 +166,41 @@ def _close_rm(rm: pyvisa.ResourceManager) -> None:
         pass
 
 
+def _usb_resource_override() -> str:
+    """Validate an optional direct USBTMC address without enumerating devices."""
+    resource = os.environ.get("RIGOL_USB_RESOURCE", "").strip()
+    if not resource:
+        return ""
+    try:
+        address = pyvisa.rname.ResourceName.from_string(resource)
+        if (isinstance(address, pyvisa.rname.USBInstr)
+                and int(address.manufacturer_id, 0) == _RIGOL_USB_VID):
+            return resource
+    except ValueError:
+        pass
+    raise RuntimeError(
+        "RIGOL_USB_RESOURCE must be a Rigol USB VISA instrument address (vendor 0x1AB1)."
+    )
+
+
 def _open_usb_scope() -> tuple[pyvisa.ResourceManager, pyvisa.resources.Resource]:
-    """Open the Rigol USB scope, auto-selecting the backend that can see it.
+    """Open the Rigol USB scope, auto-selecting a suitable backend.
 
     A scope whose USB interface is bound to WinUSB is reachable via pyvisa-py (@py);
     a scope on the native USBTMC driver is reachable via an installed NI-VISA backend
     (@ivi). Each backend only sees devices bound to its kind of driver, so we try them
-    in turn and use the first that finds the scope. Returns (resource_manager, resource).
+    in turn and use the first that finds the scope. RIGOL_USB_RESOURCE bypasses
+    discovery on every backend, including after open failures and reconnects.
+    Returns (resource_manager, resource).
     """
     global _usb_backend_hint
+    explicit_resource = _usb_resource_override()
     # Try the last-known-good backend first, then the rest (dedup, preserve order).
     order = list(dict.fromkeys(
         ([_usb_backend_hint] if _usb_backend_hint else []) + list(_USB_BACKENDS)
     ))
     problems: list[str] = []
+    retryable_open_error: Exception | None = None
     for backend in order:
         try:
             rm = pyvisa.ResourceManager(backend)
@@ -174,7 +208,7 @@ def _open_usb_scope() -> tuple[pyvisa.ResourceManager, pyvisa.resources.Resource
             problems.append(f"{backend}: backend unavailable ({type(exc).__name__}: {exc})")
             continue
         try:
-            resource = find_usb_resource_string(rm)
+            resource = explicit_resource or find_usb_resource_string(rm)
         except RuntimeError as exc:           # backend works but scope not found on it
             problems.append(f"{backend}: {exc}")
             _close_rm(rm)
@@ -183,11 +217,22 @@ def _open_usb_scope() -> tuple[pyvisa.ResourceManager, pyvisa.resources.Resource
             problems.append(f"{backend}: enumeration failed ({type(exc).__name__}: {exc})")
             _close_rm(rm)
             continue
-        scope = rm.open_resource(resource)
+        try:
+            scope = rm.open_resource(resource)
+        except Exception as exc:
+            _close_rm(rm)
+            if not explicit_resource:
+                raise  # preserve the existing discovery path's retry behavior
+            problems.append(f"{backend}: could not open {resource} ({type(exc).__name__}: {exc})")
+            # A direct address may be inaccessible on this backend's USB driver.
+            # Try the others, but retain communication errors for server._call's retries.
+            if isinstance(exc, (pyvisa.errors.VisaIOError, UnicodeDecodeError, OSError)):
+                retryable_open_error = exc
+            continue
         _usb_backend_hint = backend
         return rm, scope
 
-    raise RuntimeError(
+    message = (
         "RIGOL_USB is set but no Rigol USB scope could be opened on any backend:\n  "
         + "\n  ".join(problems)
         + "\n\nThe scope's USB interface must be bound to a supported driver:\n"
@@ -197,6 +242,10 @@ def _open_usb_scope() -> tuple[pyvisa.ResourceManager, pyvisa.resources.Resource
         "for this interpreter: libusb-package has no wheel for every Python (e.g. 3.14), so\n"
         "run on a Python it ships wheels for, or use the native USBTMC driver via NI-VISA."
     )
+    if retryable_open_error is not None:
+        retryable_open_error.add_note(message)
+        raise retryable_open_error
+    raise RuntimeError(message)
 
 
 def get_scope() -> pyvisa.resources.Resource:
@@ -216,30 +265,33 @@ def get_scope() -> pyvisa.resources.Resource:
         _scope.chunk_size = 1024 * 1024
         _scope.write_termination = "\n"
         _scope.read_termination = "\n"
-        try:
-            _scope.clear()  # flush any stale data left in the receive buffer
-        except pyvisa.errors.VisaIOError:
-            # USBTMC under pyvisa-py does not support the clear operation; the
-            # initial flush is only a best-effort cleanup, so skip it on that backend.
-            pass
+        if not _skip_usb_clear():
+            try:
+                _scope.clear()  # flush any stale data left in the receive buffer
+            except pyvisa.errors.VisaIOError:
+                # Some backends do not support VISA device clear; this initial
+                # flush is only a best-effort cleanup.
+                pass
         _scope.write("*CLS")  # clear the SCPI error queue (clear() only flushes I/O buffers)
     return _scope
 
 
 def invalidate_scope() -> None:
     """Close and discard the cached connection so the next call reconnects."""
-    global _scope, _driver
+    global _scope, _driver, _idn
     if _scope is not None:
-        try:
-            _scope.clear()
-        except Exception:
-            pass
+        if not _skip_usb_clear():
+            try:
+                _scope.clear()
+            except Exception:
+                pass
         try:
             _scope.close()
         except Exception:
             pass
         _scope = None
     _driver = None
+    _idn = None
 
 
 def disconnect_scope() -> dict:
@@ -247,18 +299,43 @@ def disconnect_scope() -> dict:
 
     The caller must hold the server's scope lock. A later tool may reconnect.
     """
-    global _scope, _driver, _rm
+    global _scope, _driver, _rm, _idn
     connected = _scope is not None
     if _scope is not None:
         _scope.close()  # keep the reference and propagate failure if close fails
         _scope = None
     _driver = None
+    _idn = None
     if _rm is not None:
         _rm.close()
         _rm = None
     return {"disconnected": connected, "connected": False,
             "message": "Cached scope access released; a later scope tool may reconnect."
             if connected else "No cached scope connection was open."}
+
+
+def _get_idn(scope: pyvisa.resources.Resource) -> str:
+    global _idn
+    if _idn is None:
+        _idn = scope.query("*IDN?").strip()
+    return _idn
+
+
+def get_capabilities(scope: pyvisa.resources.Resource) -> ModelCapabilities:
+    """Return this connection's documented model capabilities."""
+    return capabilities_for(_get_idn(scope))
+
+
+def validate_analog_channel(scope: pyvisa.resources.Resource, channel: str) -> str:
+    """Normalize a channel and reject unavailable inputs before channel I/O."""
+    channel = channel.upper()
+    model = get_capabilities(scope)
+    if channel not in model.analog_channels:
+        raise ValueError(
+            f"{channel} is not available on {model.model}; "
+            f"available analog channels: {', '.join(model.analog_channels)}"
+        )
+    return channel
 
 
 def get_driver(scope: pyvisa.resources.Resource) -> ScopeDriver:
@@ -268,7 +345,7 @@ def get_driver(scope: pyvisa.resources.Resource) -> ScopeDriver:
     """
     global _driver
     if _driver is None:
-        _driver = driver_for(scope.query("*IDN?"))
+        _driver = driver_for(_get_idn(scope))
     return _driver
 
 
@@ -279,7 +356,9 @@ def set_driver_from_idn(idn_str: str) -> ScopeDriver | None:
     they've just queried ``*IDN?`` themselves (the ``idn`` tool, for example).
     Returns the selected driver, or None if no driver matched.
     """
-    global _driver
+    global _driver, _idn
+    _idn = idn_str.strip()
+    _driver = None
     try:
         _driver = driver_for(idn_str)
     except RuntimeError:
@@ -439,7 +518,11 @@ def connection_info() -> dict:
         "RIGOL_IP":  rigol_ip or "(unset)",
     }
     if usb_in_use():
-        info["RIGOL_USB_SERIAL"] = rigol_serial or "(unset → any Rigol scope)"
+        explicit_resource = os.environ.get("RIGOL_USB_RESOURCE", "").strip()
+        info["RIGOL_USB_RESOURCE"] = explicit_resource or "(unset → discover)"
+        info["RIGOL_USB_SERIAL"] = ("(ignored with explicit resource)" if explicit_resource
+                                    else rigol_serial or "(unset → any Rigol scope)")
+        info["RIGOL_USB_SKIP_CLEAR"] = _skip_usb_clear()
         info["backend_hint"]     = _usb_backend_hint or "(none yet — will auto-detect)"
     else:
         info["lan_target"] = (f"TCPIP0::{rigol_ip}::5555::SOCKET"
@@ -451,23 +534,21 @@ def connection_info() -> dict:
         # query *IDN? here — connection_info must remain I/O-free even when the device
         # has gone unresponsive.
         info["driver"]   = _driver.name if _driver is not None else "(not detected yet)"
+        if _idn is not None:
+            try:
+                model = capabilities_for(_idn)
+            except RuntimeError:
+                info["model_capabilities"] = "(unknown model)"
+            else:
+                info["model"] = model.model
+                info["analog_channels"] = list(model.analog_channels)
     else:
         info["session"] = "not yet opened"
     return info
 
 
-# All measurement items supported by DS1000Z :MEASure:ITEM
-MEASURE_ITEMS = frozenset({
-    # Voltage
-    "VMAX", "VMIN", "VPP", "VTOP", "VBASE", "VAMP", "VAVG", "VRMS",
-    "OVERSHOOT", "PRESHOOT", "MAREA", "MPAREA",
-    "VUPPER", "VMID", "VLOWER", "VARIANCE", "PVRMS",
-    # Time (single-source)
-    "PERIOD", "FREQUENCY", "RTIME", "FTIME",
-    "PWIDTH", "NWIDTH", "PDUTY", "NDUTY",
-    "TVMAX", "TVMIN", "PSLEWRATE", "NSLEWRATE",
-    "PPULSES", "NPULSES", "PEDGES", "NEDGES",
-})
+# Known single-source items across registered drivers.
+MEASURE_ITEMS = ALL_SINGLE_SOURCE_ITEMS
 
 # Two-source (delay/phase) items across all families — used to reject them from the
 # single-source measure(). Each family's own accepted set lives on its driver.
@@ -482,8 +563,11 @@ def measure(scope: pyvisa.resources.Resource, channel: str, item: str) -> str:
         raise ValueError(f"'{item}' requires two sources — use measure_between()")
     if it not in MEASURE_ITEMS:
         raise ValueError(f"Unknown item '{item}'. Valid: {sorted(MEASURE_ITEMS)}")
+    ch = validate_analog_channel(scope, ch)
+    driver = get_driver(scope)
+    driver.validate_measure_item(it)
     note = ensure_channel_displayed(scope, ch)
-    get_driver(scope).register_measure_item(scope, it, ch)
+    driver.register_measure_item(scope, it, ch)
     value = annotate_measurement_value(scope.query(f":MEASure:ITEM? {it},{ch}").strip())
     if note:
         value += f"\n⚠ {note}"
@@ -502,13 +586,13 @@ def measure_between(
     use a different naming the driver maps/validates them (e.g. DHO's rising/falling matrix,
     where RDELAY→RRDELAY etc. and RFDELAY/FRDELAY are also accepted verbatim).
 
-    source1/source2: CHAN1–CHAN4.
+    source1/source2 must be analog channels available on the connected model.
     Returns the raw value string (delay in seconds, phase in degrees).
     """
     driver = get_driver(scope)
     it = driver.resolve_two_source_item(item)
-    s1 = source1.upper()
-    s2 = source2.upper()
+    s1 = validate_analog_channel(scope, source1)
+    s2 = validate_analog_channel(scope, source2)
     notes = [n for src in (s1, s2) if (n := ensure_channel_displayed(scope, src))]
     driver.register_measure_item(scope, it, s1, s2)
     value = annotate_measurement_value(scope.query(f":MEASure:ITEM? {it},{s1},{s2}").strip())
@@ -539,6 +623,7 @@ def ensure_channel_displayed(scope: pyvisa.resources.Resource, channel: str) -> 
     ch = channel.upper()
     if not ch.startswith("CHAN"):
         return None
+    ch = validate_analog_channel(scope, ch)
     if scope.query(f":{ch}:DISP?").strip() not in ("0", "OFF"):
         return None
     scope.write(f":{ch}:DISP ON")
@@ -569,6 +654,7 @@ def annotate_measurement_value(value: str) -> str:
 
 def get_scope_state(scope: pyvisa.resources.Resource) -> dict:
     """Return a snapshot of the scope's current configuration."""
+    channels = get_capabilities(scope).analog_channels
     state: dict = {}
 
     state["timebase"] = {
@@ -578,8 +664,7 @@ def get_scope_state(scope: pyvisa.resources.Resource) -> dict:
     }
 
     state["channels"] = {}
-    for i in range(1, 5):
-        ch = f"CHAN{i}"
+    for ch in channels:
         state["channels"][ch] = {
             "display":    scope.query(f":{ch}:DISP?").strip(),
             "scale_v_div": scope.query(f":{ch}:SCAL?").strip(),
@@ -619,7 +704,17 @@ def set_channel(
     both DS1000Z and DHO — writing SCAL first would cause a subsequent
     PROB change to multiply it and land at the wrong V/div.
     """
-    ch = channel.upper()
+    ch = validate_analog_channel(scope, channel)
+    # Catalog-only models retain generic channel configuration. Registered dialects
+    # can reject a request before any writes when firmware has additional prerequisites.
+    try:
+        driver = get_driver(scope)
+    except RuntimeError:
+        driver = None
+    if driver is not None:
+        driver.validate_channel_configuration(
+            scope, ch, display=display, vertical=scale is not None or offset is not None,
+        )
     if display is not None:
         scope.write(f":{ch}:DISP {'ON' if display else 'OFF'}")
     if probe is not None:
@@ -656,7 +751,9 @@ def set_trigger(
     slope: str | None = None,
     level: float | None = None,
 ) -> None:
-    """Configure edge trigger. source: CHAN1–CHAN4, EXT. slope: POS, NEG, RFAL."""
+    """Configure edge trigger; analog sources must exist on the connected model."""
+    if source is not None and source.upper().startswith("CHAN"):
+        source = validate_analog_channel(scope, source)
     scope.write(":TRIGger:MODE EDGE")
     if source is not None:
         scope.write(f":TRIGger:EDGE:SOURce {source.upper()}")
@@ -674,14 +771,15 @@ def get_waveform(scope: pyvisa.resources.Resource, channel: str) -> dict:
     Returns time/voltage arrays plus summary statistics.
     Stop or single-trigger the scope first for consistent data.
     """
-    ch = channel.upper()
+    ch = validate_analog_channel(scope, channel)
+    driver = get_driver(scope)
     warnings = []
     if note := ensure_channel_displayed(scope, ch):
         warnings.append(note)
     scope.write(f":WAV:SOUR {ch}")
     scope.write(":WAV:MODE NORM")
     scope.write(":WAV:FORM ASC")
-    get_driver(scope).prepare_waveform(scope)
+    driver.prepare_waveform(scope)
 
     pre_str = scope.query(":WAV:PRE?").strip()
     pre = pre_str.split(",")

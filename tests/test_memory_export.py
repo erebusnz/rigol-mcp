@@ -120,6 +120,19 @@ def test_invalid_channels(tmp_path, channels):
         mem.export_acquisition(MemoryScope(), channels, tmp_path)
 
 
+def test_missing_model_channel_is_rejected_before_export_io(tmp_path):
+    # A valid global schema choice can still be unavailable on the connected scope.
+    class TwoChannelScope(FakeScope):
+        def query(self, command):
+            assert command == "*IDN?", "Reject the channel before acquisition or channel queries"
+            return "RIGOL TECHNOLOGIES,DHO802,SERIAL,1.0"
+
+    scope = TwoChannelScope()
+    with pytest.raises(ValueError, match="CHAN3 is not available on DHO802"):
+        mem.export_acquisition(scope, ["CHAN3"], tmp_path)
+    assert not scope.written and not list(tmp_path.iterdir())
+
+
 def test_interrupted_export_is_partial(tmp_path):
     scope = MemoryScope()
     scope.fail_at = 2
