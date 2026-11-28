@@ -8,7 +8,8 @@ version = "0.1.0"
 description = "MCP server for Rigol DS1000Z oscilloscope over LAN"
 requires-python = ">=3.11"
 dependencies = [
-    "mcp[cli]>=1.0.0,<2",
+    "anyio>=4.5",           # shield worker shutdown from MCP request cancellation
+    "mcp[cli]>=1.30,<2",
     "pyvisa>=1.14.0",
     "pyvisa-py>=0.7.0",
     "pyusb>=1.2.0",          # USBTMC transport for pyvisa-py (pure-Python; installs anywhere)
@@ -30,6 +31,7 @@ dependencies = [
 test = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "trustme>=1.2",          # temporary certificate authorities for HTTPS integration tests
 ]
 
 [project.scripts]

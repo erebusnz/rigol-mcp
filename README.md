@@ -171,9 +171,6 @@ Works without needing drivers using the `pyvisa-py` (`@py`) backend.
   If the kernel's `usbtmc` module has already claimed the scope, unbind or blacklist it so
   `libusb` can take the interface — pyvisa-py does not detach it automatically.
 
-> USB is currently hardware-tested on Windows only; Linux/macOS use the standard `libusb`
-> setup above.
-
 ## Claude Desktop / Claude Code Setup
 
 Add to your `.mcp.json` (or Claude Desktop MCP config):
@@ -195,6 +192,26 @@ Add to your `.mcp.json` (or Claude Desktop MCP config):
 
 For **USB**, replace the `RIGOL_IP` entry in `env` with `"RIGOL_USB": "1"` (see [USB connection](#usb-connection)).
 
+## HTTP server mode
+
+Run `rigol-mcp` as a persistent server when you want to share a scope between MCP
+clients or access it from another computer. Clients connect to the server's
+`/mcp` URL using Streamable HTTP; the server connects to the scope over USB or LAN.
+Complete scope tool calls run one at a time.
+
+After [configuring the scope connection](#configuration), start a local HTTP server:
+
+```sh
+uv run rigol-mcp --transport http
+```
+
+By default, it listens at `http://127.0.0.1:8000/mcp`. Configure your MCP client
+with that URL instead of a stdio launch command. Stdio remains the default transport.
+
+See [HTTP server configuration](docs/remote-operation.md) for remote access,
+authentication, client examples, and **optional HTTPS**, either directly or
+through a reverse proxy.
+
 ## Tools
 
 ### Identification & State
@@ -214,6 +231,9 @@ For **USB**, replace the `RIGOL_IP` entry in `env` with `"RIGOL_USB": "1"` (see 
 | `stop` | Stop and freeze display |
 | `single` | Arm for one trigger event, then stop |
 | `autoscale` | Auto-configure timebase, vertical scale, and trigger |
+
+`run` and `stop` confirm the requested state. `single` arms acquisition without waiting
+for a trigger; use `get_acquisition_info` to check for `STOP` before reading a completed capture.
 
 ### Configuration
 
@@ -342,28 +362,23 @@ is retained separately from the manifest error. Sample/time subranges, CSV, and 
 ## Architecture
 
 ```
-Claude / MCP client
-        │  MCP protocol (stdio)
+Codex / Claude / MCP client
+        │  MCP protocol (stdio or streamable HTTP)
 rigol_mcp.server      ← tool definitions, request routing
         │  Python function calls
 rigol_mcp.scope       ← VISA connection, SCPI command helpers
         │  SCPI over TCP/IP (port 5555) or USBTMC
-Rigol DS1000Z         ← 192.168.1.123  /  USB
+Rigol oscilloscope    ← 192.168.1.123  /  USB
 ```
 
-The VISA connection is cached across tool calls (one connection per server session) and reconnects automatically on communication errors.
-
-Scope I/O is strictly synchronous. One server lock covers each operation, including
-export transfers, restoration, and retry cleanup; disconnect takes that same lock and
-waits for the active operation to finish. There are no background scope workers or
-parallel channel downloads. Cancellation cannot interrupt an in-progress synchronous
-transfer midway through its I/O.
+The VISA connection is shared across client sessions within one server process.
+An instrument worker serializes complete tool calls, including cleanup and readback.
 
 Use `disconnect` when this server should release its cached USB/LAN access. It closes
 the session without clearing the device or changing acquisition settings, and does not
 open a connection when none exists. A later scope tool can reconnect, so avoid queuing
 more scope calls after disconnecting. This lock and disconnect apply to this server
-process only: use one active server/client for a physical instrument. They cannot
+process only: use one active server process for a physical instrument. They cannot
 prevent a separate program or another MCP server from accessing the scope.
 
 ## SCPI Transport

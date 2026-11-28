@@ -1,8 +1,13 @@
 """Rigol DS1000Z MCP server."""
 
+import argparse
 import base64
+import hmac
 import json
+import sys
 import os
+import ssl
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -25,6 +30,7 @@ from mcp.server.stdio import stdio_server
 from rigol_mcp.waveform_analysis import describe_waveform as _describe_waveform
 from rigol_mcp.memory_export import get_acquisition_info, export_acquisition
 from rigol_mcp.models import ANALOG_CHANNELS
+from rigol_mcp.worker import InstrumentWorker
 from rigol_mcp.scope import (
     get_scope, invalidate_scope, disconnect_scope, usb_in_use, active_backend,
     screenshot_png,
@@ -36,8 +42,39 @@ from rigol_mcp.scope import (
     get_scope_state, set_channel, set_timebase, set_trigger, get_waveform,
 )
 
+_worker: InstrumentWorker | None = None
+_worker_users = 0
+
+
+async def _close_scope():
+    async with _scope_lock:
+        disconnect_scope()
+
+
+@asynccontextmanager
+async def _instrument_lifespan(_server):
+    """Share one worker across sessions; HTTP also retains it between sessions."""
+    global _worker, _worker_users, _scope_lock
+    if _worker is None:
+        _scope_lock = asyncio.Lock()
+        _worker = InstrumentWorker(_close_scope)
+    elif _worker_users == 0:
+        raise RuntimeError("Instrument worker is shutting down")
+    _worker_users += 1
+    try:
+        yield {}
+    finally:
+        _worker_users -= 1
+        if _worker_users == 0:
+            try:
+                await _worker.aclose()
+            finally:
+                _worker = None
+
+
 server = Server(
     "rigol-mcp",
+    lifespan=_instrument_lifespan,
     instructions=(
         "Rigol oscilloscope control over SCPI.\n"
         "- Read the scope with the data tools first: measure/measure_between for numeric "
@@ -52,7 +89,8 @@ server = Server(
     ),
 )
 
-# Serialises all VISA operations — the underlying TCP socket is not thread/async safe.
+# Protects individual VISA operations within the instrument worker. Its queue
+# additionally serialises complete tools, including readback and screenshot cleanup.
 _scope_lock = asyncio.Lock()
 _last_call_time: float = 0.0
 _MIN_INTERVAL = 0.1          # 100 ms minimum between SCPI operations
@@ -232,7 +270,7 @@ async def list_tools() -> list[types.Tool]:
                 "source: an analog channel available on the connected model, or EXT. "
                 "slope: POS (rising), NEG (falling), or RFAL (either). "
                 "level: trigger level in volts. "
-                "Returns the resulting trigger configuration. "
+                "Returns the resulting trigger configuration and any verification warnings. "
                 "Do not call concurrently with any other rigol tool."
             ),
             inputSchema={
@@ -356,7 +394,8 @@ async def list_tools() -> list[types.Tool]:
                 "TRACK (cursors snap to and follow the waveform at the X position). "
                 "Omit mode to keep current mode. "
                 "ax/bx: cursor A/B time positions in seconds. "
-                "Returns the resulting cursor readouts. "
+                "Returns the resulting cursor readouts, retrying unavailable values briefly. "
+                "Readouts that remain invalid are labelled unavailable. "
                 "Do not call concurrently with any other rigol tool."
             ),
             inputSchema={
@@ -375,6 +414,7 @@ async def list_tools() -> list[types.Tool]:
                 "Read current cursor mode and all cursor readouts. "
                 "AX_s and BX_s are time positions in seconds. "
                 "inv_delta_x is 1/Δt — the frequency between the two cursors. "
+                "Retries unavailable values briefly and labels persistent invalid readouts. "
                 "Do not call concurrently with any other rigol tool."
             ),
             inputSchema={"type": "object", "properties": {}, "required": []},
@@ -403,7 +443,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="run",
-            description="Start continuous acquisition. Returns trigger status after the command. Do not call concurrently with any other rigol tool.",
+            description="Start continuous acquisition. Waits briefly for an active trigger status, or reports a state timeout. Do not call concurrently with any other rigol tool.",
             inputSchema={"type": "object", "properties": {}, "required": []},
         ),
         types.Tool(
@@ -411,7 +451,7 @@ async def list_tools() -> list[types.Tool]:
             description=(
                 "Stop acquisition and freeze the display. "
                 "Use before reading measurements or cursors for stable values. "
-                "Returns trigger status after the command. "
+                "Confirms STOP before returning, or reports a state timeout. "
                 "Do not call concurrently with any other rigol tool."
             ),
             inputSchema={"type": "object", "properties": {}, "required": []},
@@ -420,7 +460,7 @@ async def list_tools() -> list[types.Tool]:
             name="single",
             description=(
                 "Arm the scope for a single acquisition; stops automatically after one trigger event. "
-                "Returns trigger status. "
+                "Returns a trigger-status snapshot after a one-second settling interval. "
                 "Note: acquisition does not complete until a trigger occurs — "
                 "call stop or check trigger status before reading measurements. "
                 "Do not call concurrently with any other rigol tool."
@@ -445,12 +485,24 @@ async def list_tools() -> list[types.Tool]:
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
+    # Honour cancellation already pending before handing a job to the worker.
+    await asyncio.sleep(0)
+    if _worker is None or _worker_users == 0:
+        raise RuntimeError("Instrument worker is not running")
+    # Cancellation propagates to the concurrent Future: queued tools are skipped,
+    # while a running tool keeps its place until all instrument work is complete.
+    return await asyncio.wrap_future(_worker.submit(_dispatch_tool, name, arguments))
+
+
+async def _dispatch_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
+    """Execute a complete tool on the instrument thread."""
     global _last_call_time
     if name == "disconnect":
         # Deliberately avoid _call: it would open a scope just to disconnect it.
         async with _scope_lock:
             result = disconnect_scope()
-            _last_call_time = time.monotonic()
+            # Disconnect must not erase a preceding screenshot's recovery deadline.
+            _last_call_time = max(_last_call_time, time.monotonic())
         return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
     if name == "get_acquisition_info":
         result = await _call(get_acquisition_info)
@@ -547,13 +599,15 @@ async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
 
     if name == "set_trigger":
         level = arguments.get("level")
-        await _call(
+        warnings = await _call(
             set_trigger,
             source=arguments.get("source"),
             slope=arguments.get("slope"),
             level=float(level) if level is not None else None,
         )
         state = await _call(get_scope_state)
+        if warnings:
+            state["trigger"]["warnings"] = warnings
         return [types.TextContent(type="text", text=json.dumps(state["trigger"], indent=2))]
 
     if name == "measure":
@@ -620,13 +674,217 @@ async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
     raise ValueError(f"Unknown tool: {name}")
 
 
-def main() -> None:
-    asyncio.run(_run())
+# --- Transports ---------------------------------------------------------------------
+#
+# stdio (default): started by the MCP client. http: a long-lived service serving MCP over
+# streamable HTTP at /mcp, e.g. on a lab host next to the scope. HTTP support is imported
+# lazily so stdio users are unaffected by the extra dependencies.
+
+_LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+_WILDCARD = {"0.0.0.0", "::", ""}
+
+
+def _host_patterns(hosts) -> list[str]:
+    """Host header patterns (any port) for the given names or addresses."""
+    patterns = []
+    for host in hosts:
+        host = host.strip().lower()
+        if not host:
+            continue
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"  # IPv6 literal, as it appears in a Host header
+        patterns += [host, f"{host}:*"]  # without a port (80/443) and with any port
+    return patterns
+
+
+def dns_rebinding_settings(bind_host: str, extra_hosts=()):
+    """Host/Origin checks for a server that runs without a token.
+
+    Without a token, a web page in a browser on the same machine could reach the server
+    through DNS rebinding (its own name resolving to 127.0.0.1), so only requests addressed
+    to the loopback names, the bind address and any extra names are accepted. With a token
+    this isn't needed: the page can't know it, and a reverse proxy in front may pass any Host.
+    """
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    names = set(_LOOPBACK) | set(extra_hosts)
+    if bind_host not in _WILDCARD:
+        names.add(bind_host)
+    hosts = _host_patterns(sorted(names))
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=hosts,
+        allowed_origins=[f"http://{h}" for h in hosts] + [f"https://{h}" for h in hosts],
+    )
 
 
 async def _run() -> None:
     async with stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())
+
+
+def _require_bearer(app, token: str):
+    """ASGI wrapper that rejects requests without ``Authorization: Bearer <token>``."""
+    expected = token.encode()
+
+    def authorized(header: bytes) -> bool:
+        scheme, _, credentials = header.partition(b" ")
+        # The scheme is case-insensitive (RFC 7235); the token is compared in constant time.
+        return scheme.lower() == b"bearer" and hmac.compare_digest(credentials.strip(), expected)
+
+    async def wrapped(scope, receive, send):
+        if scope["type"] == "http":
+            provided = dict(scope["headers"]).get(b"authorization", b"")
+            if not authorized(provided):
+                await send({
+                    "type": "http.response.start",
+                    "status": 401,
+                    "headers": [(b"content-type", b"text/plain"), (b"www-authenticate", b"Bearer")],
+                })
+                await send({"type": "http.response.body", "body": b"Unauthorized\n"})
+                return
+        await app(scope, receive, send)
+
+    return wrapped
+
+
+def _normalize_host_headers(app):
+    """Match Host/Origin values against the SDK's lowercase allowlists."""
+    async def wrapped(scope, receive, send):
+        if scope["type"] == "http":
+            # The SDK compares header values case-sensitively. Hosts and origin
+            # schemes are case-insensitive; an Origin has no path component.
+            scope = dict(scope, headers=[
+                (name, value.lower() if name in (b"host", b"origin") else value)
+                for name, value in scope["headers"]
+            ])
+        await app(scope, receive, send)
+
+    return wrapped
+
+
+class _ASGIEndpoint:
+    """Wrap an ASGI callable so Starlette's Route treats it as an app, not a view."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        await self.app(scope, receive, send)
+
+
+def build_http_app(token: str | None = None, bind_host: str = "127.0.0.1", extra_hosts=()):
+    """Starlette app serving the MCP server over streamable HTTP at ``/mcp``.
+
+    Without a token, requests must be addressed to a loopback name, the bind address or one
+    of ``extra_hosts`` (DNS-rebinding protection, see ``dns_rebinding_settings``).
+    """
+    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+
+    security = None if token else dns_rebinding_settings(bind_host, extra_hosts)
+    session_manager = StreamableHTTPSessionManager(app=server, security_settings=security)
+    handler = session_manager.handle_request
+    if token:
+        handler = _require_bearer(handler, token)
+    else:
+        handler = _normalize_host_headers(handler)
+
+    @asynccontextmanager
+    async def lifespan(_app):
+        async with _instrument_lifespan(server), session_manager.run():
+            yield
+
+    return Starlette(routes=[Route("/mcp", endpoint=_ASGIEndpoint(handler))], lifespan=lifespan)
+
+
+def check_http_exposure(host: str, token: str | None, allow_no_auth: bool) -> None:
+    """Refuse to expose scope control on the network without a token."""
+    if host not in _LOOPBACK and not token and not allow_no_auth:
+        raise SystemExit(
+            f"Refusing to serve on {host} without authentication: anyone on the network could "
+            "control the oscilloscope. Set RIGOL_MCP_TOKEN (clients send it as "
+            "'Authorization: Bearer <token>'), or pass --allow-no-auth if you really mean it."
+        )
+
+
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    env = os.environ
+    parser = argparse.ArgumentParser(prog="rigol-mcp", description="Rigol oscilloscope MCP server")
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "http", "https"],
+        default=env.get("RIGOL_MCP_TRANSPORT", "stdio"),
+        help="stdio (default), http, or https (requires a certificate and key); HTTP modes serve /mcp",
+    )
+    parser.add_argument("--host", default=env.get("RIGOL_MCP_HOST", "127.0.0.1"))
+    parser.add_argument("--port", type=int, default=int(env.get("RIGOL_MCP_PORT", "8000")))
+    parser.add_argument(
+        "--ssl-certfile",
+        default=env.get("RIGOL_MCP_SSL_CERTFILE") or None,
+        help="PEM certificate chain for HTTPS (requires --ssl-keyfile and an HTTP transport)",
+    )
+    parser.add_argument(
+        "--ssl-keyfile",
+        default=env.get("RIGOL_MCP_SSL_KEYFILE") or None,
+        help="unencrypted PEM private key for HTTPS (requires --ssl-certfile)",
+    )
+    parser.add_argument(
+        "--allow-no-auth",
+        action="store_true",
+        default=env.get("RIGOL_MCP_ALLOW_NO_AUTH", "").strip().lower() in ("1", "true", "yes", "on"),
+        help="allow serving on a non-loopback address without RIGOL_MCP_TOKEN",
+    )
+    parser.add_argument(
+        "--allowed-hosts",
+        default=env.get("RIGOL_MCP_ALLOWED_HOSTS", ""),
+        help="without a token: extra host names clients may use in the URL (comma-separated)",
+    )
+    args = parser.parse_args(argv)
+    if args.transport == "https" or args.ssl_certfile is not None or args.ssl_keyfile is not None:
+        if not args.ssl_certfile or not args.ssl_keyfile:
+            parser.error(
+                "HTTPS requires both --ssl-certfile and --ssl-keyfile "
+                "(or their RIGOL_MCP_SSL_* variables)"
+            )
+        if args.transport not in {"http", "https"}:
+            parser.error("TLS certificate/key settings require --transport http or https")
+    return args
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = _parse_args(argv)
+    if args.transport == "stdio":
+        asyncio.run(_run())
+        return
+
+    import uvicorn
+
+    token = os.environ.get("RIGOL_MCP_TOKEN") or None
+    check_http_exposure(args.host, token, args.allow_no_auth)
+    tls_options = {}
+    if args.ssl_certfile:
+        try:
+            # Validate before starting the service. An explicit empty password prevents
+            # OpenSSL from prompting on stdin if an encrypted key is supplied.
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(args.ssl_certfile, args.ssl_keyfile, password="")
+        except (OSError, ValueError) as exc:
+            raise SystemExit(
+                f"Cannot load TLS certificate/key (unencrypted PEM key required): {exc}"
+            ) from exc
+        tls_options = {
+            "ssl_certfile": args.ssl_certfile,
+            "ssl_keyfile": args.ssl_keyfile,
+            "ssl_keyfile_password": "",
+        }
+    extra_hosts = [h for h in args.allowed_hosts.split(",") if h.strip()]
+    if not token:
+        allowed = ", ".join(dns_rebinding_settings(args.host, extra_hosts).allowed_hosts)
+        print(f"No token set: accepting requests addressed to {allowed}", file=sys.stderr)
+    app = build_http_app(token, bind_host=args.host, extra_hosts=extra_hosts)
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info", **tls_options)
 
 
 if __name__ == "__main__":

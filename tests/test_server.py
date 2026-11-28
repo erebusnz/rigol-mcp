@@ -1,13 +1,19 @@
-"""Unit tests for rigol_mcp.server — the _call retry/recovery wrapper and the
-backend-aware screenshot reconnect. VISA access is faked; no hardware involved."""
+"""Unit tests for the dispatcher, retry/recovery wrapper and screenshot reconnect.
+
+These exercise the worker-side handlers directly; test_http and test_worker cover
+the public dispatch queue. VISA access is faked; no hardware involved.
+"""
 
 import time
 import asyncio
+import json
 
 import pyvisa
 import pytest
 
 import rigol_mcp.server as srv
+from rigol_mcp import scope as sc
+from tests.conftest import FakeScope
 
 
 @pytest.fixture(autouse=True)
@@ -43,7 +49,7 @@ async def test_disconnect_does_not_open_scope(monkeypatch):
     monkeypatch.setattr(srv, "get_scope", forbidden)
     monkeypatch.setattr(srv, "disconnect_scope", disconnect)
     assert "disconnect" in {t.name for t in await srv.list_tools()}
-    result = await srv.call_tool("disconnect", {})
+    result = await srv._dispatch_tool("disconnect", {})
     assert '"connected": false' in result[0].text
 
 
@@ -75,7 +81,7 @@ async def test_disconnect_waits_until_retries_finish(monkeypatch):
     monkeypatch.setattr(srv, "disconnect_scope", disconnect)
     active = asyncio.create_task(srv._call(operation))
     await backoff_started.wait()
-    closing = asyncio.create_task(srv.call_tool("disconnect", {}))
+    closing = asyncio.create_task(srv._dispatch_tool("disconnect", {}))
     queued = asyncio.create_task(srv._call(lambda scope: events.append("next")))
     await real_sleep(0)
     assert events == ["operation"] and not closing.done() and not queued.done()
@@ -93,7 +99,7 @@ async def test_cancelled_queued_disconnect_never_touches_scope(monkeypatch):
     monkeypatch.setattr(srv, "get_scope", forbidden)
     monkeypatch.setattr(srv, "disconnect_scope", forbidden)
     async with srv._scope_lock:
-        task = asyncio.create_task(srv.call_tool("disconnect", {}))
+        task = asyncio.create_task(srv._dispatch_tool("disconnect", {}))
         await asyncio.sleep(0)
         assert not task.done()
         task.cancel()
@@ -115,7 +121,7 @@ async def test_export_cleanup_retains_scope_lock(monkeypatch, tmp_path):
 
     monkeypatch.setattr(srv, "get_scope", lambda: scope)
     monkeypatch.setattr(mem, "invalidate_scope", invalidate)
-    result = await srv.call_tool("export_acquisition", {
+    result = await srv._dispatch_tool("export_acquisition", {
         "channels": ["CHAN1"], "output_dir": str(tmp_path),
     })
     assert '"complete": false' in result[0].text
@@ -239,6 +245,58 @@ async def test_call_does_not_retry_non_communication_errors():
     assert invalidated == []               # no reconnect
 
 
+@pytest.mark.parametrize("replies,readback,outcome", [
+    (['0,"No error";1'], "4", "clean"),
+    (["1", '0,"No error";1'], "4", "warning"),
+    (["1", '-220,"Parameter error";1', '0,"No error";1'], "4", "Parameter error"),
+    (["1", '0,"No error";1'], "3.98", "readback mismatch"),
+    (["unexpected"], "4", "Incomplete SCPI"),
+])
+async def test_usb_trigger_verification(monkeypatch, replies, readback, outcome):
+    monkeypatch.setenv("RIGOL_USB", "1")
+    pending = iter(replies)
+    scope = FakeScope(responses={
+        ":SYSTem:ERRor?;*OPC?": lambda: next(pending),
+        ":TRIGger:MODE?": "EDGE",
+        ":TRIGger:EDGE:SOURce?": "CHAN1",
+        ":TRIGger:EDGE:SLOPe?": "POS",
+        ":TRIGger:EDGE:LEVel?": readback,
+    })
+    scope.timeout = 10000
+    monkeypatch.setattr(srv, "get_scope", lambda: scope)
+    monkeypatch.setattr(srv, "get_scope_state", lambda _: {"trigger": {"level_v": readback}})
+    arguments = {"source": "CHAN1", "slope": "POS", "level": 4}
+    if outcome in {"clean", "warning"}:
+        result = json.loads((await srv._dispatch_tool("set_trigger", arguments))[0].text)
+        assert result["level_v"] == "4"
+        assert bool(result.get("warnings")) == (outcome == "warning")
+    else:
+        with pytest.raises(RuntimeError, match=outcome):
+            await srv._dispatch_tool("set_trigger", arguments)
+    assert list(pending) == []
+    assert scope.written.count(":TRIGger:EDGE:LEVel 4.0") == 1
+    assert scope.timeout == 10000
+    assert invalidated == []
+
+
+async def test_trigger_verification_timeout_does_not_replay_writes(monkeypatch):
+    monkeypatch.setenv("RIGOL_USB", "1")
+
+    def timeout():
+        assert scope.timeout == 1000
+        raise _tmo()
+
+    scope = FakeScope(responses={":SYSTem:ERRor?;*OPC?": timeout})
+    scope.timeout = 10000
+    sc._scope = scope
+    monkeypatch.setattr(srv, "get_scope", lambda: scope)
+    with pytest.raises(RuntimeError, match="settings were not replayed"):
+        await srv._call(sc.set_trigger, level=4.0)
+    assert scope.written.count(":TRIGger:EDGE:LEVel 4.0") == 1
+    assert scope.timeout == 10000
+    assert scope.closed and sc._scope is None
+
+
 async def test_export_no_retry_option():
     calls = []
 
@@ -261,12 +319,12 @@ async def test_export_tool_routing(monkeypatch):
     monkeypatch.setattr(srv, "_call", fake_call)
     tools = {t.name for t in await srv.list_tools()}
     assert {"export_acquisition", "get_acquisition_info"} <= tools
-    result = await srv.call_tool("export_acquisition", {"channels": ["CHAN1"]})
+    result = await srv._dispatch_tool("export_acquisition", {"channels": ["CHAN1"]})
     assert '"complete": true' in result[0].text
     assert calls[0][0] is srv.export_acquisition
     assert calls[0][1]["_retry"] is False
     with pytest.raises(ValueError, match="only complete records"):
-        await srv.call_tool("export_acquisition", {"start": -1})
+        await srv._dispatch_tool("export_acquisition", {"start": -1})
 
 
 async def test_acquisition_info_tool_routing(monkeypatch):
@@ -277,7 +335,7 @@ async def test_acquisition_info_tool_routing(monkeypatch):
         return {"status": "WAIT", "supported_transfer_modes": ["screen", "acquisition_memory"]}
 
     monkeypatch.setattr(srv, "_call", fake_call)
-    result = await srv.call_tool("get_acquisition_info", {})
+    result = await srv._dispatch_tool("get_acquisition_info", {})
     assert '"status": "WAIT"' in result[0].text
     assert calls == [(srv.get_acquisition_info, (), {})]
 
@@ -293,7 +351,7 @@ async def test_partial_export_response_survives_tool_routing(monkeypatch):
         return partial
 
     monkeypatch.setattr(srv, "export_acquisition", fake_export)
-    result = await srv.call_tool("export_acquisition", {"channels": ["CHAN1"]})
+    result = await srv._dispatch_tool("export_acquisition", {"channels": ["CHAN1"]})
     assert json.loads(result[0].text) == partial
 
 
@@ -344,7 +402,7 @@ async def _run_screenshot(monkeypatch, tmp_path, *, usb, backend):
     monkeypatch.setattr(srv, "active_backend", lambda: backend)
     monkeypatch.setattr(srv, "invalidate_scope", lambda: calls.__setitem__("invalidate", calls["invalidate"] + 1))
 
-    result = await srv.call_tool("screenshot", {})
+    result = await srv._dispatch_tool("screenshot", {})
     return result, calls, tmp_path
 
 
@@ -380,7 +438,7 @@ async def test_send_raw_listed_when_enabled(monkeypatch):
 
 async def test_send_raw_call_rejected_when_disabled():
     with pytest.raises(ValueError, match="send_raw is disabled"):
-        await srv.call_tool("send_raw", {"command": ":CHAN1:SCAL?"})
+        await srv._dispatch_tool("send_raw", {"command": ":CHAN1:SCAL?"})
 
 
 async def test_send_raw_call_works_when_enabled(monkeypatch):
@@ -390,5 +448,5 @@ async def test_send_raw_call_works_when_enabled(monkeypatch):
         return "1.000000e+00"
 
     monkeypatch.setattr(srv, "_call", fake_call)
-    result = await srv.call_tool("send_raw", {"command": ":CHAN1:SCAL?"})
+    result = await srv._dispatch_tool("send_raw", {"command": ":CHAN1:SCAL?"})
     assert result[0].text == "1.000000e+00"

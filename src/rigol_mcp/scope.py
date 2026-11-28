@@ -5,6 +5,7 @@ the functions here handle the generic orchestration and delegate the parts that 
 the active :class:`~rigol_mcp.drivers.ScopeDriver`, selected once per connection.
 """
 
+import math
 import os
 import time
 
@@ -59,6 +60,9 @@ _USB_TIMEOUT_MS = 10_000
 _LAN_TIMEOUT_MS = 30_000
 # Headroom for blocking operations such as :AUToscale;*OPC? (measured ~4 s over USB).
 _SLOW_OP_TIMEOUT_MS = 30_000
+# Firmware can acknowledge a write before its status/readout cache is refreshed.
+_READBACK_TIMEOUT = 1.0
+_READBACK_INTERVAL = 0.05
 
 # Module-level cached connection
 _rm: pyvisa.ResourceManager | None = None
@@ -374,15 +378,37 @@ def check_scpi_error(scope: pyvisa.resources.Resource) -> str | None:
     Draining (not just reading one) prevents stale errors from a prior failed command
     leaking into the next tool's result. Capped to avoid pathological loops.
     """
+    return _drain_scpi_errors(scope)[0]
+
+
+def _drain_scpi_errors(
+    scope: pyvisa.resources.Resource, *, completion_marker: bool = False,
+) -> tuple[str | None, bool]:
+    """Return the first error and whether the instrument omitted any error replies."""
+    command = ":SYSTem:ERRor?" + (";*OPC?" if completion_marker else "")
     first_err: str | None = None
+    missing_reply = False
     for _ in range(16):
-        response = scope.query(":SYSTem:ERRor?").strip()
+        response = scope.query(command).strip()
+        if completion_marker:
+            # DS1104Z 00.04.05.SP1 can omit the first error reply after a
+            # trigger-limit write. The following *OPC? still replies, avoiding
+            # an empty USB read. A marker alone is not a "No error" response.
+            if response == "1":
+                missing_reply = True
+                continue
+            response, separator, marker = response.rpartition(";")
+            if not separator or marker.strip() != "1" or not response.strip():
+                raise RuntimeError("Incomplete SCPI error/completion response")
+            response = response.strip()
         # No error returns '0' or '0,"No error"'
         if response == "0" or response.startswith("0,"):
-            return first_err
+            return first_err, missing_reply
         if first_err is None:
             first_err = response
-    return first_err
+    if completion_marker:
+        raise RuntimeError(f"SCPI error queue did not clear after 16 reads: {first_err or 'missing replies'}")
+    return first_err, missing_reply
 
 
 def get_cursor_mode(scope: pyvisa.resources.Resource) -> str:
@@ -417,8 +443,8 @@ def set_cursor_positions(
             raise RuntimeError(f"SCPI error after '{cmd}': {err}")
 
 
-def get_cursor_values(scope: pyvisa.resources.Resource) -> dict:
-    """Read current cursor mode and all available readouts. AX_s/BX_s are in seconds."""
+def _read_cursor_values(scope: pyvisa.resources.Resource) -> dict:
+    """Read one cursor snapshot. AX_s/BX_s are in seconds."""
     mode = scope.query(":CURSor:MODE?").strip()
     result: dict = {"mode": mode}
     if mode not in ("MANUAL", "MAN", "TRACK", "TRAC"):
@@ -442,6 +468,41 @@ def get_cursor_values(scope: pyvisa.resources.Resource) -> dict:
     return result
 
 
+def _invalid_readout(value) -> bool:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return True
+    return not math.isfinite(number) or abs(number) >= _INVALID_SENTINEL
+
+
+def get_cursor_values(scope: pyvisa.resources.Resource) -> dict:
+    """Retry unavailable cursor readouts briefly, then label any remaining invalid values."""
+    deadline = time.monotonic() + _READBACK_TIMEOUT
+    while True:
+        result = _read_cursor_values(scope)
+        invalid = [key for key, value in result.items()
+                   if key != "mode" and _invalid_readout(value)]
+        # Coincident X cursors have a valid zero delta but no finite inverse delta.
+        # Waiting for another acquisition cannot make 1/0 meaningful.
+        if ("inv_delta_x" in invalid and "delta_x" not in invalid
+                and float(result["delta_x"]) == 0):
+            result["inv_delta_x"] = "undefined (delta_x is zero)"
+            invalid.remove("inv_delta_x")
+        if not invalid:
+            return result
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            for key in invalid:
+                result[key] = f"{result[key]} (unavailable: scope invalid/overflow readout)"
+            result["warning"] = (
+                "Cursor readouts did not become valid within the settling interval. "
+                "Check cursor sources, positions and acquired waveform data."
+            )
+            return result
+        time.sleep(min(_READBACK_INTERVAL, remaining))
+
+
 def send_raw(scope: pyvisa.resources.Resource, command: str) -> str:
     """Send an arbitrary SCPI command; returns response for queries, empty string otherwise.
     Automatically checks the error queue after writes and raises on SCPI errors."""
@@ -453,28 +514,42 @@ def send_raw(scope: pyvisa.resources.Resource, command: str) -> str:
     return ""
 
 
-def run(scope: pyvisa.resources.Resource) -> str:
-    """Start continuous acquisition. Returns trigger status."""
-    scope.write(":RUN")
+def _acquisition_command(scope, command: str, expected: set[str] | None) -> str:
+    scope.write(command)
     if err := check_scpi_error(scope):
-        raise RuntimeError(f"SCPI error after :RUN: {err}")
-    return scope.query(":TRIGger:STATus?").strip()
+        raise RuntimeError(f"SCPI error after {command}: {err}")
+    if expected is None:
+        # SINGLE may complete before we ever observe RUN, or wait indefinitely for
+        # a trigger. Neither a status transition nor STOP is a valid wait condition.
+        # Sample after a short settling window; do not use a blocking *OPC? here.
+        time.sleep(_READBACK_TIMEOUT)
+        return scope.query(":TRIGger:STATus?").strip()
+    deadline = time.monotonic() + _READBACK_TIMEOUT
+    while True:
+        status = scope.query(":TRIGger:STATus?").strip()
+        if status in expected:
+            return status
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            # RuntimeError is deliberate: a state timeout must not trigger the
+            # transport's reconnect-and-reissue policy (TimeoutError is OSError).
+            raise RuntimeError(f"{command} did not reach {sorted(expected)}; last trigger status: {status}")
+        time.sleep(min(_READBACK_INTERVAL, remaining))
+
+
+def run(scope: pyvisa.resources.Resource) -> str:
+    """Start continuous acquisition and wait briefly for an active trigger status."""
+    return _acquisition_command(scope, ":RUN", {"TD", "WAIT", "RUN", "AUTO"})
 
 
 def stop(scope: pyvisa.resources.Resource) -> str:
-    """Stop acquisition and freeze the display. Returns trigger status."""
-    scope.write(":STOP")
-    if err := check_scpi_error(scope):
-        raise RuntimeError(f"SCPI error after :STOP: {err}")
-    return scope.query(":TRIGger:STATus?").strip()
+    """Stop acquisition and confirm STOP before returning."""
+    return _acquisition_command(scope, ":STOP", {"STOP"})
 
 
 def single(scope: pyvisa.resources.Resource) -> str:
-    """Capture a single acquisition then stop. Returns trigger status."""
-    scope.write(":SINGle")
-    if err := check_scpi_error(scope):
-        raise RuntimeError(f"SCPI error after :SINGle: {err}")
-    return scope.query(":TRIGger:STATus?").strip()
+    """Arm one acquisition; return a settled status snapshot without waiting for a trigger."""
+    return _acquisition_command(scope, ":SINGle", None)
 
 
 def autoscale(scope: pyvisa.resources.Resource) -> None:
@@ -750,10 +825,11 @@ def set_trigger(
     source: str | None = None,
     slope: str | None = None,
     level: float | None = None,
-) -> None:
-    """Configure edge trigger; analog sources must exist on the connected model."""
+) -> list[str]:
+    """Configure edge trigger and return warnings about incomplete verification."""
     if source is not None and source.upper().startswith("CHAN"):
         source = validate_analog_channel(scope, source)
+    usb_marker = usb_in_use() and get_capabilities(scope).family == "DS1000Z"
     scope.write(":TRIGger:MODE EDGE")
     if source is not None:
         scope.write(f":TRIGger:EDGE:SOURce {source.upper()}")
@@ -761,8 +837,43 @@ def set_trigger(
         scope.write(f":TRIGger:EDGE:SLOPe {slope.upper()}")
     if level is not None:
         scope.write(f":TRIGger:EDGE:LEVel {level}")
-    if err := check_scpi_error(scope):
-        raise RuntimeError(f"SCPI error in set_trigger: {err}")
+    previous_timeout = scope.timeout
+    verification_failed = False
+    try:
+        if usb_marker:
+            scope.timeout = min(previous_timeout, 1000)
+        err, missing_reply = _drain_scpi_errors(scope, completion_marker=usb_marker)
+        if err:
+            raise RuntimeError(f"SCPI error in set_trigger: {err}")
+        if missing_reply:
+            # Confirm each requested setting; a later empty error queue cannot
+            # establish what the missing reply would have said.
+            expected = {":TRIGger:MODE?": "EDGE"}
+            if source is not None:
+                expected[":TRIGger:EDGE:SOURce?"] = source.upper()
+            if slope is not None:
+                expected[":TRIGger:EDGE:SLOPe?"] = slope.upper()
+            for command, value in expected.items():
+                observed = scope.query(command).strip()
+                if observed != value:
+                    raise RuntimeError(f"Trigger readback mismatch for {command}: expected {value}, got {observed}")
+            if level is not None:
+                observed = float(scope.query(":TRIGger:EDGE:LEVel?").strip())
+                if not math.isclose(observed, level, rel_tol=1e-6, abs_tol=1e-9):
+                    raise RuntimeError(f"Trigger level readback mismatch: requested {level} V, got {observed} V")
+            return ["Scope omitted an error-queue reply. Requested trigger settings were confirmed "
+                    "by readback, but SCPI error verification is incomplete."]
+        return []
+    except (pyvisa.errors.VisaIOError, UnicodeDecodeError, OSError) as exc:
+        verification_failed = True
+        # The writes already completed. Replaying them can reproduce the same
+        # missing reply; leave reconnection to the next tool instead.
+        raise RuntimeError("Trigger commands were sent, but verification failed; "
+                           "settings were not replayed. Read the scope state before retrying.") from exc
+    finally:
+        scope.timeout = previous_timeout
+        if verification_failed:
+            invalidate_scope()
 
 
 def get_waveform(scope: pyvisa.resources.Resource, channel: str) -> dict:
