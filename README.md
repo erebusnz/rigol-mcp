@@ -420,19 +420,14 @@ rigol_mcp.scope       ← VISA connection, SCPI command helpers
 Rigol oscilloscope    ← 192.168.1.123  /  USB
 ```
 
-The VISA connection is cached across tool calls (one connection per server session) and reconnects automatically on communication errors.
-
-Scope I/O is strictly synchronous. One server lock covers each operation, including
-export transfers, restoration, and retry cleanup; disconnect takes that same lock and
-waits for the active operation to finish. There are no background scope workers or
-parallel channel downloads. Cancellation cannot interrupt an in-progress synchronous
-transfer midway through its I/O.
+The VISA connection is shared across client sessions within one server process.
+An instrument worker serializes complete tool calls, including cleanup and readback.
 
 Use `disconnect` when this server should release its cached USB/LAN access. It closes
 the session without clearing the device or changing acquisition settings, and does not
 open a connection when none exists. A later scope tool can reconnect, so avoid queuing
 more scope calls after disconnecting. This lock and disconnect apply to this server
-process only: use one active server/client for a physical instrument. They cannot
+process only: use one active server process for a physical instrument. They cannot
 prevent a separate program or another MCP server from accessing the scope.
 
 ## SCPI Transport
