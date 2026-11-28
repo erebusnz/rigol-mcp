@@ -270,7 +270,7 @@ async def list_tools() -> list[types.Tool]:
                 "source: an analog channel available on the connected model, or EXT. "
                 "slope: POS (rising), NEG (falling), or RFAL (either). "
                 "level: trigger level in volts. "
-                "Returns the resulting trigger configuration. "
+                "Returns the resulting trigger configuration and any verification warnings. "
                 "Do not call concurrently with any other rigol tool."
             ),
             inputSchema={
@@ -599,13 +599,15 @@ async def _dispatch_tool(name: str, arguments: dict) -> list[types.ContentBlock]
 
     if name == "set_trigger":
         level = arguments.get("level")
-        await _call(
+        warnings = await _call(
             set_trigger,
             source=arguments.get("source"),
             slope=arguments.get("slope"),
             level=float(level) if level is not None else None,
         )
         state = await _call(get_scope_state)
+        if warnings:
+            state["trigger"]["warnings"] = warnings
         return [types.TextContent(type="text", text=json.dumps(state["trigger"], indent=2))]
 
     if name == "measure":

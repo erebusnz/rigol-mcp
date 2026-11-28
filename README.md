@@ -171,8 +171,8 @@ Works without needing drivers using the `pyvisa-py` (`@py`) backend.
   If the kernel's `usbtmc` module has already claimed the scope, unbind or blacklist it so
   `libusb` can take the interface — pyvisa-py does not detach it automatically.
 
-> USB is currently hardware-tested on Windows only; Linux/macOS use the standard `libusb`
-> setup above.
+> USB has been hardware-tested on Windows and on Linux with a DS1104Z
+> (`pyvisa-py` 0.8.1).
 
 ## Claude Desktop / Claude Code Setup
 
@@ -463,6 +463,15 @@ When `RIGOL_USB` is set, the server instead connects over **USBTMC** (`USB0::0x1
 - **`@ivi`** (NI-VISA / IVI VISA) — for the **native USBTMC driver** (e.g. installed with Rigol UltraSigma).
 
 The two backends frame USBTMC reads differently, so block reads (waveform/screenshot) are read by exact byte count on `@py` and via native message reads (`read_raw`) on `@ivi`. Transport and backend selection live in `rigol_mcp.scope.get_scope` / `_open_usb_scope`.
+
+DS1000Z USB trigger setup checks the error queue with an appended `*OPC?` completion
+response. On a DS1104Z running firmware `00.04.05.SP1`, setting a trigger-limit value
+can apply the setting but omit the first error response. The completion response
+avoids a USB timeout; the server drains the remaining errors and checks the requested
+settings by readback. It returns a `warnings` entry when an error response was missing,
+since readback cannot prove that response contained no error. Real SCPI errors and
+readback mismatches still fail the tool. A communication failure during verification
+closes the connection without replaying the trigger writes.
 
 ## Testing
 

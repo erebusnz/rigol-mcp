@@ -6,11 +6,14 @@ the public dispatch queue. VISA access is faked; no hardware involved.
 
 import time
 import asyncio
+import json
 
 import pyvisa
 import pytest
 
 import rigol_mcp.server as srv
+from rigol_mcp import scope as sc
+from tests.conftest import FakeScope
 
 
 @pytest.fixture(autouse=True)
@@ -240,6 +243,58 @@ async def test_call_does_not_retry_non_communication_errors():
         await srv._call(bad)
     assert calls["n"] == 1                 # no retry
     assert invalidated == []               # no reconnect
+
+
+@pytest.mark.parametrize("replies,readback,outcome", [
+    (['0,"No error";1'], "4", "clean"),
+    (["1", '0,"No error";1'], "4", "warning"),
+    (["1", '-220,"Parameter error";1', '0,"No error";1'], "4", "Parameter error"),
+    (["1", '0,"No error";1'], "3.98", "readback mismatch"),
+    (["unexpected"], "4", "Incomplete SCPI"),
+])
+async def test_usb_trigger_verification(monkeypatch, replies, readback, outcome):
+    monkeypatch.setenv("RIGOL_USB", "1")
+    pending = iter(replies)
+    scope = FakeScope(responses={
+        ":SYSTem:ERRor?;*OPC?": lambda: next(pending),
+        ":TRIGger:MODE?": "EDGE",
+        ":TRIGger:EDGE:SOURce?": "CHAN1",
+        ":TRIGger:EDGE:SLOPe?": "POS",
+        ":TRIGger:EDGE:LEVel?": readback,
+    })
+    scope.timeout = 10000
+    monkeypatch.setattr(srv, "get_scope", lambda: scope)
+    monkeypatch.setattr(srv, "get_scope_state", lambda _: {"trigger": {"level_v": readback}})
+    arguments = {"source": "CHAN1", "slope": "POS", "level": 4}
+    if outcome in {"clean", "warning"}:
+        result = json.loads((await srv._dispatch_tool("set_trigger", arguments))[0].text)
+        assert result["level_v"] == "4"
+        assert bool(result.get("warnings")) == (outcome == "warning")
+    else:
+        with pytest.raises(RuntimeError, match=outcome):
+            await srv._dispatch_tool("set_trigger", arguments)
+    assert list(pending) == []
+    assert scope.written.count(":TRIGger:EDGE:LEVel 4.0") == 1
+    assert scope.timeout == 10000
+    assert invalidated == []
+
+
+async def test_trigger_verification_timeout_does_not_replay_writes(monkeypatch):
+    monkeypatch.setenv("RIGOL_USB", "1")
+
+    def timeout():
+        assert scope.timeout == 1000
+        raise _tmo()
+
+    scope = FakeScope(responses={":SYSTem:ERRor?;*OPC?": timeout})
+    scope.timeout = 10000
+    sc._scope = scope
+    monkeypatch.setattr(srv, "get_scope", lambda: scope)
+    with pytest.raises(RuntimeError, match="settings were not replayed"):
+        await srv._call(sc.set_trigger, level=4.0)
+    assert scope.written.count(":TRIGger:EDGE:LEVel 4.0") == 1
+    assert scope.timeout == 10000
+    assert scope.closed and sc._scope is None
 
 
 async def test_export_no_retry_option():
