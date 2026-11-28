@@ -394,7 +394,8 @@ async def list_tools() -> list[types.Tool]:
                 "TRACK (cursors snap to and follow the waveform at the X position). "
                 "Omit mode to keep current mode. "
                 "ax/bx: cursor A/B time positions in seconds. "
-                "Returns the resulting cursor readouts. "
+                "Returns the resulting cursor readouts, retrying unavailable values briefly. "
+                "Readouts that remain invalid are labelled unavailable. "
                 "Do not call concurrently with any other rigol tool."
             ),
             inputSchema={
@@ -413,6 +414,7 @@ async def list_tools() -> list[types.Tool]:
                 "Read current cursor mode and all cursor readouts. "
                 "AX_s and BX_s are time positions in seconds. "
                 "inv_delta_x is 1/Δt — the frequency between the two cursors. "
+                "Retries unavailable values briefly and labels persistent invalid readouts. "
                 "Do not call concurrently with any other rigol tool."
             ),
             inputSchema={"type": "object", "properties": {}, "required": []},
@@ -441,7 +443,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="run",
-            description="Start continuous acquisition. Returns trigger status after the command. Do not call concurrently with any other rigol tool.",
+            description="Start continuous acquisition. Waits briefly for an active trigger status, or reports a state timeout. Do not call concurrently with any other rigol tool.",
             inputSchema={"type": "object", "properties": {}, "required": []},
         ),
         types.Tool(
@@ -449,7 +451,7 @@ async def list_tools() -> list[types.Tool]:
             description=(
                 "Stop acquisition and freeze the display. "
                 "Use before reading measurements or cursors for stable values. "
-                "Returns trigger status after the command. "
+                "Confirms STOP before returning, or reports a state timeout. "
                 "Do not call concurrently with any other rigol tool."
             ),
             inputSchema={"type": "object", "properties": {}, "required": []},
@@ -458,7 +460,7 @@ async def list_tools() -> list[types.Tool]:
             name="single",
             description=(
                 "Arm the scope for a single acquisition; stops automatically after one trigger event. "
-                "Returns trigger status. "
+                "Returns a trigger-status snapshot after a one-second settling interval. "
                 "Note: acquisition does not complete until a trigger occurs — "
                 "call stop or check trigger status before reading measurements. "
                 "Do not call concurrently with any other rigol tool."

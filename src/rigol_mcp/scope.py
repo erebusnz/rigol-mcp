@@ -5,6 +5,7 @@ the functions here handle the generic orchestration and delegate the parts that 
 the active :class:`~rigol_mcp.drivers.ScopeDriver`, selected once per connection.
 """
 
+import math
 import os
 import time
 
@@ -59,6 +60,9 @@ _USB_TIMEOUT_MS = 10_000
 _LAN_TIMEOUT_MS = 30_000
 # Headroom for blocking operations such as :AUToscale;*OPC? (measured ~4 s over USB).
 _SLOW_OP_TIMEOUT_MS = 30_000
+# Firmware can acknowledge a write before its status/readout cache is refreshed.
+_READBACK_TIMEOUT = 1.0
+_READBACK_INTERVAL = 0.05
 
 # Module-level cached connection
 _rm: pyvisa.ResourceManager | None = None
@@ -417,8 +421,8 @@ def set_cursor_positions(
             raise RuntimeError(f"SCPI error after '{cmd}': {err}")
 
 
-def get_cursor_values(scope: pyvisa.resources.Resource) -> dict:
-    """Read current cursor mode and all available readouts. AX_s/BX_s are in seconds."""
+def _read_cursor_values(scope: pyvisa.resources.Resource) -> dict:
+    """Read one cursor snapshot. AX_s/BX_s are in seconds."""
     mode = scope.query(":CURSor:MODE?").strip()
     result: dict = {"mode": mode}
     if mode not in ("MANUAL", "MAN", "TRACK", "TRAC"):
@@ -442,6 +446,41 @@ def get_cursor_values(scope: pyvisa.resources.Resource) -> dict:
     return result
 
 
+def _invalid_readout(value) -> bool:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return True
+    return not math.isfinite(number) or abs(number) >= _INVALID_SENTINEL
+
+
+def get_cursor_values(scope: pyvisa.resources.Resource) -> dict:
+    """Retry unavailable cursor readouts briefly, then label any remaining invalid values."""
+    deadline = time.monotonic() + _READBACK_TIMEOUT
+    while True:
+        result = _read_cursor_values(scope)
+        invalid = [key for key, value in result.items()
+                   if key != "mode" and _invalid_readout(value)]
+        # Coincident X cursors have a valid zero delta but no finite inverse delta.
+        # Waiting for another acquisition cannot make 1/0 meaningful.
+        if ("inv_delta_x" in invalid and "delta_x" not in invalid
+                and float(result["delta_x"]) == 0):
+            result["inv_delta_x"] = "undefined (delta_x is zero)"
+            invalid.remove("inv_delta_x")
+        if not invalid:
+            return result
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            for key in invalid:
+                result[key] = f"{result[key]} (unavailable: scope invalid/overflow readout)"
+            result["warning"] = (
+                "Cursor readouts did not become valid within the settling interval. "
+                "Check cursor sources, positions and acquired waveform data."
+            )
+            return result
+        time.sleep(min(_READBACK_INTERVAL, remaining))
+
+
 def send_raw(scope: pyvisa.resources.Resource, command: str) -> str:
     """Send an arbitrary SCPI command; returns response for queries, empty string otherwise.
     Automatically checks the error queue after writes and raises on SCPI errors."""
@@ -453,28 +492,42 @@ def send_raw(scope: pyvisa.resources.Resource, command: str) -> str:
     return ""
 
 
-def run(scope: pyvisa.resources.Resource) -> str:
-    """Start continuous acquisition. Returns trigger status."""
-    scope.write(":RUN")
+def _acquisition_command(scope, command: str, expected: set[str] | None) -> str:
+    scope.write(command)
     if err := check_scpi_error(scope):
-        raise RuntimeError(f"SCPI error after :RUN: {err}")
-    return scope.query(":TRIGger:STATus?").strip()
+        raise RuntimeError(f"SCPI error after {command}: {err}")
+    if expected is None:
+        # SINGLE may complete before we ever observe RUN, or wait indefinitely for
+        # a trigger. Neither a status transition nor STOP is a valid wait condition.
+        # Sample after a short settling window; do not use a blocking *OPC? here.
+        time.sleep(_READBACK_TIMEOUT)
+        return scope.query(":TRIGger:STATus?").strip()
+    deadline = time.monotonic() + _READBACK_TIMEOUT
+    while True:
+        status = scope.query(":TRIGger:STATus?").strip()
+        if status in expected:
+            return status
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            # RuntimeError is deliberate: a state timeout must not trigger the
+            # transport's reconnect-and-reissue policy (TimeoutError is OSError).
+            raise RuntimeError(f"{command} did not reach {sorted(expected)}; last trigger status: {status}")
+        time.sleep(min(_READBACK_INTERVAL, remaining))
+
+
+def run(scope: pyvisa.resources.Resource) -> str:
+    """Start continuous acquisition and wait briefly for an active trigger status."""
+    return _acquisition_command(scope, ":RUN", {"TD", "WAIT", "RUN", "AUTO"})
 
 
 def stop(scope: pyvisa.resources.Resource) -> str:
-    """Stop acquisition and freeze the display. Returns trigger status."""
-    scope.write(":STOP")
-    if err := check_scpi_error(scope):
-        raise RuntimeError(f"SCPI error after :STOP: {err}")
-    return scope.query(":TRIGger:STATus?").strip()
+    """Stop acquisition and confirm STOP before returning."""
+    return _acquisition_command(scope, ":STOP", {"STOP"})
 
 
 def single(scope: pyvisa.resources.Resource) -> str:
-    """Capture a single acquisition then stop. Returns trigger status."""
-    scope.write(":SINGle")
-    if err := check_scpi_error(scope):
-        raise RuntimeError(f"SCPI error after :SINGle: {err}")
-    return scope.query(":TRIGger:STATus?").strip()
+    """Arm one acquisition; return a settled status snapshot without waiting for a trigger."""
+    return _acquisition_command(scope, ":SINGle", None)
 
 
 def autoscale(scope: pyvisa.resources.Resource) -> None:

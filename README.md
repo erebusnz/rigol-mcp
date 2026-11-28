@@ -291,6 +291,12 @@ measurement workflow can still interleave with another client's calls.
 | `single` | Arm for one trigger event, then stop |
 | `autoscale` | Auto-configure timebase, vertical scale, and trigger |
 
+`run` and `stop` poll trigger status for up to one second to confirm the requested
+state, reporting an error if it does not settle. `single` returns a status snapshot
+after a one-second settling interval; it does not wait indefinitely for a trigger.
+Use `get_acquisition_info` to check for `STOP` before reading a completed capture.
+Instrument I/O remains subject to the connection's VISA timeout.
+
 ### Configuration
 
 | Tool | Description |
@@ -383,6 +389,11 @@ is retained separately from the manifest error. Sample/time subranges, CSV, and 
 |---|---|
 | `set_cursors` | Set cursor mode (MANUAL/TRACK/OFF) and time positions in seconds |
 | `get_cursor_values` | Read cursor positions (in seconds) and all delta/amplitude readouts |
+
+Cursor reads retry invalid/overflow values for up to one second while the scope
+updates its calculations. Persistent invalid values are labelled `unavailable`
+with a warning; coincident X cursors report an undefined inverse delta without
+waiting. This does not start acquisition or change cursor sources.
 
 ### Utility
 

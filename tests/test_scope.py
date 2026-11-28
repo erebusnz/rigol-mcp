@@ -552,6 +552,81 @@ def test_get_waveform_tolerates_missing_vertical_scale():
     assert out["y_offset_v"] is None
 
 
+# ------------------------------------------------------- delayed instrument readbacks
+
+@pytest.fixture
+def readback_clock(monkeypatch):
+    class Clock:
+        now = 0.0
+
+        def monotonic(self):
+            return self.now
+
+        def sleep(self, delay):
+            self.now += delay
+
+    clock = Clock()
+    monkeypatch.setattr(sc, "time", clock)
+    return clock
+
+
+@pytest.mark.parametrize("operation, command, stale, settled", [
+    (sc.run, ":RUN", "STOP", "WAIT"),
+    (sc.stop, ":STOP", "TD", "STOP"),
+    (sc.single, ":SINGle", "STOP", "WAIT"),  # no trigger arrives
+    (sc.single, ":SINGle", "TD", "STOP"),    # capture finishes during settling
+])
+def test_acquisition_status_waits_for_firmware(readback_clock, operation, command, stale, settled):
+    scope = FakeScope(responses={
+        ":SYSTem:ERRor?": "0",
+        ":TRIGger:STATus?": lambda: stale if readback_clock.now < 0.2 else settled,
+    })
+    assert operation(scope) == settled
+    assert 0.2 <= readback_clock.now <= 1.0
+    assert scope.written == [command]
+
+
+def test_stop_state_timeout_does_not_report_success_or_reissue_command(readback_clock):
+    scope = FakeScope(responses={":SYSTem:ERRor?": "0", ":TRIGger:STATus?": "RUN"})
+    with pytest.raises(RuntimeError, match="last trigger status: RUN"):
+        sc.stop(scope)
+    assert readback_clock.now == pytest.approx(1.0)
+    assert scope.written == [":STOP"]
+
+
+@pytest.mark.parametrize("condition", ["settles", "unavailable", "coincident"])
+def test_cursor_readback_settling_is_bounded(readback_clock, condition):
+    def ready():
+        return condition == "coincident" or (condition == "settles" and readback_clock.now >= 0.25)
+
+    prefix = ":CURSor:TRACk"
+    scope = FakeScope(responses={
+        ":CURSor:MODE?": "TRACK", ":TIM:SCAL?": "0.001", ":TIM:OFFS?": "0",
+        f"{prefix}:AX?": "300", f"{prefix}:BX?": "300" if condition == "coincident" else "350",
+        f"{prefix}:AXValue?": "0", f"{prefix}:BXValue?": "0" if condition == "coincident" else "0.001",
+        f"{prefix}:XDELta?": "0" if condition == "coincident" else "0.001",
+        f"{prefix}:IXDELta?": "9.9E37" if condition == "coincident" else "1000",
+        f"{prefix}:AYValue?": lambda: "1.56" if ready() else "9.9E37",
+        f"{prefix}:BYValue?": "1.60",
+        f"{prefix}:YDELta?": lambda: "0.04" if ready() else "9.9E37",
+    })
+    result = sc.get_cursor_values(scope)
+    if condition == "unavailable":
+        assert readback_clock.now == pytest.approx(1.0)
+        assert "unavailable" in result["AY_value"] and "unavailable" in result["delta_y"]
+        assert "warning" in result
+    else:
+        assert result["AY_value"] == "1.56" and result["delta_y"] == "0.04"
+        assert "warning" not in result
+        if condition == "coincident":
+            assert readback_clock.now == 0
+            assert result["inv_delta_x"] == "undefined (delta_x is zero)"
+        else:
+            assert 0.25 <= readback_clock.now <= 1.0
+    assert result["BY_value"] == "1.60"
+    assert not scope.written  # reading never changes acquisition or cursor settings
+
+
 # --------------------------------------------------------------------------- cursor math
 
 def test_time_to_screen_x_roundtrip():
