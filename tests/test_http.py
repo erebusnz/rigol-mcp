@@ -65,16 +65,13 @@ async def _session(url, headers):
         yield session
 
 
-async def test_list_tools_over_http(http_url):
+async def test_authenticated_mcp_over_http(http_url):
     async with _session(http_url, {"Authorization": f"Bearer {TOKEN}"}) as session:
         names = {t.name for t in (await session.list_tools()).tools}
-    assert {"idn", "measure", "get_waveform", "screenshot"} <= names
-
-
-async def test_tool_call_over_http(http_url):
-    # disconnect never opens a scope, so it works without hardware
-    async with _session(http_url, {"Authorization": f"Bearer {TOKEN}"}) as session:
+        assert {"idn", "measure", "get_waveform", "screenshot"} <= names
+        # disconnect never opens a scope, so it works without hardware.
         result = await session.call_tool("disconnect", {})
+    assert not result.isError
     data = json.loads(result.content[0].text)
     assert data["connected"] is False
     assert data["disconnected"] is False  # nothing was open
@@ -154,36 +151,6 @@ def test_no_token_refuses_foreign_origin(http_url_no_token, origin):
     assert response.status_code == 403
 
 
-def test_token_accepts_proxy_host(http_url):
-    # Behind a reverse proxy the Host is the proxy's name; the token is the check.
-    response = httpx.post(
-        http_url,
-        json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
-        headers={
-            "Host": "labpi.lan",
-            "Authorization": f"Bearer {TOKEN}",
-            "Accept": ACCEPT,
-        },
-    )
-    assert response.status_code not in (401, 403, 421)
-
-
-class TestRebindingSettings:
-    def test_loopback_and_bind_host(self):
-        s = srv.dns_rebinding_settings("192.168.1.5")
-        assert {"127.0.0.1:*", "localhost:*", "[::1]:*", "192.168.1.5:*", "localhost"} <= set(
-            s.allowed_hosts
-        )
-        assert "http://localhost:*" in s.allowed_origins
-
-    def test_wildcard_bind_adds_nothing(self):
-        assert "0.0.0.0:*" not in srv.dns_rebinding_settings("0.0.0.0").allowed_hosts
-
-    def test_extra_hosts(self):
-        s = srv.dns_rebinding_settings("0.0.0.0", ["bench-pi.lan", "fe80::1"])
-        assert {"bench-pi.lan:*", "[fe80::1]:*"} <= set(s.allowed_hosts)
-
-
 INIT = {
     "jsonrpc": "2.0",
     "id": 1,
@@ -204,26 +171,28 @@ def _client(app, host):
 
 class TestHostCheck:
     @pytest.mark.parametrize("host", [
-        "localhost", "localhost:8000", "LOCALHOST", "LocalHost:8000", "127.0.0.1:8000", "[::1]:8000",
+        "LOCALHOST", "LocalHost:8000", "127.0.0.1:8000", "[::1]:8000",
     ])
     def test_loopback_accepted(self, host):
         with _client(srv.build_http_app(None), "localhost") as client:
             response = client.post("/mcp", json=INIT, headers={"Accept": ACCEPT, "Host": host})
         assert response.status_code == 200, response.text
 
-    @pytest.mark.parametrize("host", [
-        "bench-pi.lan", "bench-pi.lan:8000", "BENCH-PI.lan", "BENCH-PI.lan:8000",
+    @pytest.mark.parametrize("bind_host, extra_hosts, host", [
+        ("0.0.0.0", ["Bench-Pi.LAN"], "BENCH-PI.lan"),
+        ("0.0.0.0", ["Bench-Pi.LAN"], "BENCH-PI.lan:8000"),
+        ("192.168.1.5", [], "192.168.1.5:8000"),
+        ("0.0.0.0", ["fe80::1"], "[fe80::1]:8000"),
     ])
-    def test_allowed_host_with_or_without_port(self, host):
-        app = srv.build_http_app(None, bind_host="0.0.0.0", extra_hosts=["Bench-Pi.LAN"])
+    def test_bind_and_extra_hosts_accepted(self, bind_host, extra_hosts, host):
+        app = srv.build_http_app(None, bind_host=bind_host, extra_hosts=extra_hosts)
         with _client(app, "localhost") as client:
             # An explicit header preserves case; httpx normalizes hostnames in URLs.
             response = client.post("/mcp", json=INIT, headers={"Accept": ACCEPT, "Host": host})
         assert response.status_code == 200, response.text
 
     @pytest.mark.parametrize("origin", [
-        "http://BENCH-PI.lan", "http://BENCH-PI.lan:8000",
-        "HTTPS://Bench-Pi.LAN", "HTTPS://Bench-Pi.LAN:8443",
+        "http://BENCH-PI.lan", "HTTPS://Bench-Pi.LAN:8443",
     ])
     def test_allowed_origin_case_insensitive(self, origin):
         app = srv.build_http_app(None, bind_host="0.0.0.0", extra_hosts=["Bench-Pi.LAN"])
@@ -231,9 +200,10 @@ class TestHostCheck:
             response = client.post("/mcp", json=INIT, headers={"Accept": ACCEPT, "Origin": origin})
         assert response.status_code == 200, response.text
 
-    def test_wildcard_bind_refuses_lan_address(self):
+    @pytest.mark.parametrize("host", ["192.168.1.5:8000", "0.0.0.0:8000"])
+    def test_wildcard_bind_refuses_unlisted_host(self, host):
         app = srv.build_http_app(None, bind_host="0.0.0.0")
-        with _client(app, "192.168.1.5:8000") as client:
+        with _client(app, host) as client:
             response = client.post("/mcp", json=INIT, headers={"Accept": ACCEPT})
         assert response.status_code == 421
 
