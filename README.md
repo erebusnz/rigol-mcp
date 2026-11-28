@@ -171,9 +171,6 @@ Works without needing drivers using the `pyvisa-py` (`@py`) backend.
   If the kernel's `usbtmc` module has already claimed the scope, unbind or blacklist it so
   `libusb` can take the interface — pyvisa-py does not detach it automatically.
 
-> USB has been hardware-tested on Windows and on Linux with a DS1104Z
-> (`pyvisa-py` 0.8.1).
-
 ## Claude Desktop / Claude Code Setup
 
 Add to your `.mcp.json` (or Claude Desktop MCP config):
@@ -260,16 +257,9 @@ claude mcp add --transport http rigol https://<host>:8000/mcp \
   --header "Authorization: Bearer $RIGOL_MCP_TOKEN"
 ```
 
-All sessions share one instrument connection. Complete tool calls run one at a time on a
-dedicated instrument worker, including configuration/readback and screenshot recovery.
-Other clients' scope calls wait their turn; MCP initialization, pings, and tool listings
-remain responsive while the instrument is busy. This also applies to stdio tool calls.
-
-Cancelling a queued call skips it. Once a call has started, it finishes its instrument
-operations and cleanup even if the client cancels or disconnects; a cancelled call may
-therefore still change the scope or save a capture. Shutdown skips queued calls, waits for
-the active call, and closes the connection on the worker. Separate tool calls within a
-measurement workflow can still interleave with another client's calls.
+All clients share one scope connection. Complete tool calls run sequentially; separate
+calls in a measurement workflow can interleave with another client's calls. Cancelling
+a request does not interrupt instrument work already in progress.
 
 ## Tools
 
@@ -291,11 +281,8 @@ measurement workflow can still interleave with another client's calls.
 | `single` | Arm for one trigger event, then stop |
 | `autoscale` | Auto-configure timebase, vertical scale, and trigger |
 
-`run` and `stop` poll trigger status for up to one second to confirm the requested
-state, reporting an error if it does not settle. `single` returns a status snapshot
-after a one-second settling interval; it does not wait indefinitely for a trigger.
-Use `get_acquisition_info` to check for `STOP` before reading a completed capture.
-Instrument I/O remains subject to the connection's VISA timeout.
+`run` and `stop` confirm the requested state. `single` arms acquisition without waiting
+for a trigger; use `get_acquisition_info` to check for `STOP` before reading a completed capture.
 
 ### Configuration
 
@@ -390,11 +377,6 @@ is retained separately from the manifest error. Sample/time subranges, CSV, and 
 | `set_cursors` | Set cursor mode (MANUAL/TRACK/OFF) and time positions in seconds |
 | `get_cursor_values` | Read cursor positions (in seconds) and all delta/amplitude readouts |
 
-Cursor reads retry invalid/overflow values for up to one second while the scope
-updates its calculations. Persistent invalid values are labelled `unavailable`
-with a warning; coincident X cursors report an undefined inverse delta without
-waiting. This does not start acquisition or change cursor sources.
-
 ### Utility
 
 | Tool | Description |
@@ -463,15 +445,6 @@ When `RIGOL_USB` is set, the server instead connects over **USBTMC** (`USB0::0x1
 - **`@ivi`** (NI-VISA / IVI VISA) — for the **native USBTMC driver** (e.g. installed with Rigol UltraSigma).
 
 The two backends frame USBTMC reads differently, so block reads (waveform/screenshot) are read by exact byte count on `@py` and via native message reads (`read_raw`) on `@ivi`. Transport and backend selection live in `rigol_mcp.scope.get_scope` / `_open_usb_scope`.
-
-DS1000Z USB trigger setup checks the error queue with an appended `*OPC?` completion
-response. On a DS1104Z running firmware `00.04.05.SP1`, setting a trigger-limit value
-can apply the setting but omit the first error response. The completion response
-avoids a USB timeout; the server drains the remaining errors and checks the requested
-settings by readback. It returns a `warnings` entry when an error response was missing,
-since readback cannot prove that response contained no error. Real SCPI errors and
-readback mismatches still fail the tool. A communication failure during verification
-closes the connection without replaying the trigger writes.
 
 ## Testing
 
