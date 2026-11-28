@@ -36,7 +36,7 @@ override their corresponding settings. Restart the server after changes.
 
 | Environment variable | CLI flag | Default | Purpose |
 |---|---|---|---|
-| `RIGOL_MCP_TRANSPORT` | `--transport` | `stdio` | Select `http` for an HTTP or HTTPS server |
+| `RIGOL_MCP_TRANSPORT` | `--transport` | `stdio` | `stdio`, `http`, or `https` (requires certificate/key files) |
 | `RIGOL_MCP_HOST` | `--host` | `127.0.0.1` | Local address to listen on; `0.0.0.0` listens on all IPv4 interfaces |
 | `RIGOL_MCP_PORT` | `--port` | `8000` | Server port |
 | `RIGOL_MCP_TOKEN` | — | Unset | Shared bearer token required from clients |
@@ -85,21 +85,23 @@ list the actual hostname/IP clients will use in `--allowed-hosts`.
 
 ### Native HTTPS
 
-Add both TLS settings to the server's `.env`:
+Select HTTPS and add both TLS files to the server's `.env`:
 
 ```dotenv
+RIGOL_MCP_TRANSPORT=https
 RIGOL_MCP_SSL_CERTFILE=certs/server.pem
 RIGOL_MCP_SSL_KEYFILE=certs/server-key.pem
 ```
 
-Restart the server. The endpoint becomes `https://<server-host>:8000/mcp` on the
-same configured port. Keep `RIGOL_MCP_TRANSPORT=http`; there is no separate
-`https` transport value. Bearer authentication still applies.
+Restart with `uv run rigol-mcp --transport https`, or omit the flag to use the
+environment setting. The endpoint is `https://<server-host>:8000/mcp` on the same
+configured port. Bearer authentication still applies.
 
 Use a PEM certificate chain and its matching, unencrypted PEM private key.
 Relative paths are resolved from the server's working directory. Both files are
-required together; invalid TLS configuration stops startup. With neither file
-configured, the server uses plain HTTP. A TLS-enabled port accepts HTTPS only.
+required together; missing or invalid TLS configuration stops HTTPS startup.
+Existing `http` configurations with both TLS files also serve HTTPS. For plain
+HTTP, select `http` and leave both TLS files unset. A TLS-enabled port accepts HTTPS only.
 
 ### Certificates and client trust
 
@@ -127,8 +129,8 @@ expiry and restart the server to load replacements.
 
 ### HTTPS reverse proxy
 
-Alternatively, terminate TLS at a reverse proxy. Leave the server's TLS file
-settings unset and bind `rigol-mcp` to `127.0.0.1`. Configure the proxy to forward
+Alternatively, terminate TLS at a reverse proxy. Select `http`, leave the server's
+TLS file settings unset, and bind `rigol-mcp` to `127.0.0.1`. Configure the proxy to forward
 `/mcp` to `http://127.0.0.1:8000/mcp`, preserve authorization and MCP session
 headers, and support streaming responses. Clients use the proxy's HTTPS URL.
 
@@ -212,7 +214,7 @@ reported by `idn` describes that instrument link.
 | Client still launches a local server | Replace its active stdio configuration with the HTTP entry |
 | `401 Unauthorized` | Matching server/client tokens and the `Bearer ` prefix |
 | `421` or `403` without a token | Client hostname and Origin allowed by the bind address or `--allowed-hosts` |
-| TLS startup fails | Both files configured, matching certificate/key, unencrypted key, readable paths, and `--transport http` |
+| TLS startup fails | Both files configured, matching certificate/key, unencrypted key, readable paths, and `--transport https` |
 | Certificate rejected | Trusted issuer, valid dates, and matching server hostname/IP |
 | Connection resets after enabling TLS | Client URL uses `https://` |
 | Tools appear but scope reads fail | Server's scope settings, drivers, cable, and instrument availability |

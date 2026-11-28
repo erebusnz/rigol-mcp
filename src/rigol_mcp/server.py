@@ -814,16 +814,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="rigol-mcp", description="Rigol oscilloscope MCP server")
     parser.add_argument(
         "--transport",
-        choices=["stdio", "http"],
+        choices=["stdio", "http", "https"],
         default=env.get("RIGOL_MCP_TRANSPORT", "stdio"),
-        help="stdio (default, started by the MCP client) or http (streamable HTTP at /mcp)",
+        help="stdio (default), http, or https (requires a certificate and key); HTTP modes serve /mcp",
     )
     parser.add_argument("--host", default=env.get("RIGOL_MCP_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(env.get("RIGOL_MCP_PORT", "8000")))
     parser.add_argument(
         "--ssl-certfile",
         default=env.get("RIGOL_MCP_SSL_CERTFILE") or None,
-        help="PEM certificate chain for HTTPS (requires --ssl-keyfile and --transport http)",
+        help="PEM certificate chain for HTTPS (requires --ssl-keyfile and an HTTP transport)",
     )
     parser.add_argument(
         "--ssl-keyfile",
@@ -842,14 +842,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="without a token: extra host names clients may use in the URL (comma-separated)",
     )
     args = parser.parse_args(argv)
-    if args.ssl_certfile is not None or args.ssl_keyfile is not None:
+    if args.transport == "https" or args.ssl_certfile is not None or args.ssl_keyfile is not None:
         if not args.ssl_certfile or not args.ssl_keyfile:
             parser.error(
                 "HTTPS requires both --ssl-certfile and --ssl-keyfile "
                 "(or their RIGOL_MCP_SSL_* variables)"
             )
-        if args.transport != "http":
-            parser.error("TLS certificate/key settings require --transport http")
+        if args.transport not in {"http", "https"}:
+            parser.error("TLS certificate/key settings require --transport http or https")
     return args
 
 

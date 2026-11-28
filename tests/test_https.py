@@ -43,7 +43,7 @@ def certificates(tmp_path_factory):
 
 
 def _tls_args(certificates):
-    return ["--transport", "http", "--ssl-certfile", str(certificates["cert"]),
+    return ["--transport", "https", "--ssl-certfile", str(certificates["cert"]),
             "--ssl-keyfile", str(certificates["key"])]
 
 
@@ -52,28 +52,38 @@ def test_tls_defaults_and_blank_environment(monkeypatch):
     monkeypatch.setenv("RIGOL_MCP_SSL_KEYFILE", "")
     args = srv._parse_args([])
     assert args.ssl_certfile is args.ssl_keyfile is None
+    monkeypatch.setenv("RIGOL_MCP_TRANSPORT", "https")
+    with pytest.raises(SystemExit):
+        srv._parse_args([])
 
 
 def test_tls_environment_and_cli_precedence(monkeypatch, certificates):
-    monkeypatch.setenv("RIGOL_MCP_TRANSPORT", "http")
+    monkeypatch.setenv("RIGOL_MCP_TRANSPORT", "https")
     monkeypatch.setenv("RIGOL_MCP_SSL_CERTFILE", "env-cert.pem")
     monkeypatch.setenv("RIGOL_MCP_SSL_KEYFILE", "env-key.pem")
     args = srv._parse_args([])
+    assert args.transport == "https"
     assert (args.ssl_certfile, args.ssl_keyfile) == ("env-cert.pem", "env-key.pem")
-    args = srv._parse_args(_tls_args(certificates))
-    assert (args.ssl_certfile, args.ssl_keyfile) == (str(certificates["cert"]), str(certificates["key"]))
+    # Existing http + certificate/key configurations must continue to serve TLS.
+    run = Mock()
+    monkeypatch.setattr(uvicorn, "run", run)
+    srv.main([*_tls_args(certificates), "--transport", "http"])
+    run.assert_called_once()
+    assert run.call_args.kwargs["ssl_certfile"] == str(certificates["cert"])
+    assert run.call_args.kwargs["ssl_keyfile"] == str(certificates["key"])
 
 
-@pytest.mark.parametrize("options", [
-    ["--ssl-certfile", "cert.pem"],
-    ["--ssl-keyfile", "key.pem"],
-    ["--ssl-certfile", "", "--ssl-keyfile", ""],
+@pytest.mark.parametrize("transport,options", [
+    ("http", ["--ssl-certfile", "cert.pem"]),
+    ("http", ["--ssl-keyfile", "key.pem"]),
+    ("http", ["--ssl-certfile", "", "--ssl-keyfile", ""]),
+    ("https", []),
 ])
-def test_partial_or_empty_tls_config_stops_startup(monkeypatch, capsys, options):
+def test_partial_or_empty_tls_config_stops_startup(monkeypatch, capsys, transport, options):
     run = Mock()
     monkeypatch.setattr(uvicorn, "run", run)
     with pytest.raises(SystemExit) as error:
-        srv.main(["--transport", "http", *options])
+        srv.main(["--transport", transport, *options])
     assert error.value.code == 2
     assert "requires both --ssl-certfile and --ssl-keyfile" in capsys.readouterr().err
     run.assert_not_called()
